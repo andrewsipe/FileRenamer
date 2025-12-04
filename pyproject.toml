@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "font-filerenamer"
+version = "0.1.0"
+description = "Font file renaming, organizing, and deduplication tools"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "fonttools>=4.40.0",
+    "rich>=13.0.0",
+]
+
+[tool.setuptools]
+packages = ["."]
+
+[tool.setuptools.package-data]
+"*" = ["*.py", "core/**/*"]
+

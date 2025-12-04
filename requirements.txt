@@ -1,0 +1,8 @@
+# FileRenamer dependencies
+# Scripts for renaming, organizing, and deduplicating font files.
+
+# Core dependencies (required by all scripts)
+fonttools>=4.40.0
+rich>=13.0.0
+
+# No additional dependencies beyond core
