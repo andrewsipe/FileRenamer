@@ -28,9 +28,9 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 
 # Core module imports
-import core.core_console_styles as cs
-from core.core_file_collector import collect_font_files
-from core.core_font_sorter import (
+import FontCore.core_console_styles as cs
+from FontCore.core_file_collector import collect_font_files
+from FontCore.core_font_sorter import (
     FontSorter,
     create_font_info_from_paths,
 )

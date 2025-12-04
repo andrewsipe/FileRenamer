@@ -1,0 +1,3 @@
+[submodule "FontCore"]
+	path = FontCore
+	url = https://github.com/andrewsipe/FontCore.git

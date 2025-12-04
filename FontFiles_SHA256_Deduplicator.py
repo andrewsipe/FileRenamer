@@ -51,8 +51,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
-import core.core_console_styles as cs
-from core.core_file_collector import collect_font_files
+import FontCore.core_console_styles as cs
+from FontCore.core_file_collector import collect_font_files
 
 console = cs.get_console()
 
@@ -810,7 +810,7 @@ def collect_font_files_with_progress_bar(
     Collect font files with a progress bar showing directory scanning progress.
     Uses same styling as Variation Analyzer - simple description, no dynamic updates.
     """
-    from core.core_file_collector import iter_font_files
+    from FontCore.core_file_collector import iter_font_files
 
     files_found = []
     show_progress = console and cs.RICH_AVAILABLE

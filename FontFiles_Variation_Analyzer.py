@@ -46,8 +46,8 @@ from datetime import datetime
 
 from fontTools.ttLib import TTFont
 
-import core.core_console_styles as cs
-from core.core_file_collector import collect_font_files
+import FontCore.core_console_styles as cs
+from FontCore.core_file_collector import collect_font_files
 
 console = cs.get_console()
 
