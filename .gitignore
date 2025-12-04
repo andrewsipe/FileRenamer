@@ -1,0 +1,19 @@
+# macOS hidden files
+.DS_Store
+**/.DS_Store
+
+# Node.js dependencies
+node_modules/
+
+# Python cache
+__pycache__/
+
+# VSCode settings
+.vscode/
+
+# PYSCN reports
+.pyscn/
+
+# PYSCN reports
+.ruff_cache/
+
