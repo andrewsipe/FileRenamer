@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
 """
-Font Files Simple Sorter - Organize fonts into directory structure
+Font Files Organizer - Organize fonts into directory structure
 
 Collects fonts recursively, groups by superfamily/family, renames to PostScript names,
-and organizes into directory structure (A-Z by default, or vendor-based).
+and organizes into directory structure (A-Z by default, or vendor/filename/name table based).
 
 Usage:
-    python FontFiles_SimpleSorter.py /path/to/fonts/
-    python FontFiles_SimpleSorter.py /path/to/fonts/ --output-dir /path/to/output/
-    python FontFiles_SimpleSorter.py /path/to/fonts/ --dry-run
-    python FontFiles_SimpleSorter.py /path/to/fonts/ --verbose
-    python FontFiles_SimpleSorter.py /path/to/fonts/ -vs  # Sort by vendor ID
+    python FontFiles_Organizer.py /path/to/fonts/
+    python FontFiles_Organizer.py /path/to/fonts/ --output-dir /path/to/output/
+    python FontFiles_Organizer.py /path/to/fonts/ --dry-run
+    python FontFiles_Organizer.py /path/to/fonts/ --verbose
+    python FontFiles_Organizer.py /path/to/fonts/ -vs  # Sort by vendor ID
+    python FontFiles_Organizer.py /path/to/fonts/ -ft "A,B,3"  # Sort by filename prefix
+    python FontFiles_Organizer.py /path/to/fonts/ -vt "ITC"  # Filter by vendor ID
+    python FontFiles_Organizer.py /path/to/fonts/ -nt "International Type"  # Filter by name table
 
 Options:
-    -n, --dry-run          Preview changes without moving files
-    -o, --output-dir       Specify output directory (default: sorted_fonts/ next to source)
-    -v, --verbose          Show detailed processing information
-    --no-preview           Skip preflight preview
-    -r, --recursive        Process directories recursively (default: non-recursive)
-    -vs, --vendor-sort     Sort fonts by vendor ID (OS/2 achVendID)
+    -dry, --dry-run          Preview changes without moving files
+    -o, --output-dir         Specify output directory (default: sorted_fonts/ next to source)
+    -v, --verbose            Show detailed processing information
+    --no-preview             Skip preflight preview
+    -r, --recursive           Process directories recursively (default: non-recursive)
+    -vs, --vendor-sort       Sort fonts by vendor ID (OS/2 achVendID)
+    -ft, --filename-term     Comma-separated filename prefixes to match
+    -vt, --vendID-term       Comma-separated vendor ID patterns (use ! for exact match)
+    -nt, --nametable-term     Search term for Name table fields (searches all nameID fields)
+    -cs, --case-sensitive     Enable case-sensitive matching (default: case-insensitive)
 """
 
 import os
@@ -58,7 +65,6 @@ from FontCore.core_font_utils import (
     is_valid_postscript_name,
     sanitize_folder_name,
 )
-from FontCore.core_name_policies import is_bad_vendor
 
 # Import from FontFiles_Renamer
 from FontFiles_Renamer import sort_by_version_priority
@@ -90,6 +96,7 @@ class OrganizedFont:
     original_filename: str
     metadata: Optional[FontMetadata] = None
     vendor_id: Optional[str] = None
+    name_term_match: Optional[str] = None
 
 
 @dataclass
@@ -147,6 +154,158 @@ def get_alpha_folder(name: str, fallback_filename: str) -> str:
     return "OTHER"
 
 
+def parse_vendor_term(term: str) -> Tuple[str, bool]:
+    """
+    Parse vendor term, detecting exclusive matching and truncating to 4 characters.
+
+    Args:
+        term: Vendor term string (may have "!" suffix for exact match)
+
+    Returns:
+        Tuple of (truncated_term, is_exclusive)
+    """
+    # Detect "!" suffix for exclusive matching
+    is_exclusive = term.endswith("!")
+    if is_exclusive:
+        term = term[:-1]  # Remove "!" before truncation
+
+    # Truncate to 4 characters (vendor IDs are 4-char max)
+    term = term[:4].upper()
+
+    return term, is_exclusive
+
+
+def matches_vendor_term(
+    vendor_id: str, vendor_terms: List[str], case_sensitive: bool = False
+) -> bool:
+    """
+    Check if vendor ID matches any of the vendor term patterns.
+
+    Args:
+        vendor_id: Vendor ID to check
+        vendor_terms: List of vendor term patterns (may include "!" for exact match)
+        case_sensitive: Whether matching should be case-sensitive
+
+    Returns:
+        True if vendor matches any term pattern
+    """
+    if not vendor_id or not vendor_terms:
+        return False
+
+    # Normalize vendor ID: strip padding/spaces for comparison
+    vendor_normalized = vendor_id.strip().rstrip(" ")
+
+    for term in vendor_terms:
+        parsed_term, is_exclusive = parse_vendor_term(term)
+
+        # Normalize term for comparison
+        term_normalized = parsed_term if case_sensitive else parsed_term.upper()
+        vendor_check = vendor_id if case_sensitive else vendor_id.upper()
+
+        if is_exclusive:
+            # Exact match: strip padding and compare
+            vendor_stripped = (
+                vendor_normalized.upper() if not case_sensitive else vendor_normalized
+            )
+            if vendor_stripped == term_normalized:
+                return True
+        else:
+            # Prefix match: check if vendor starts with term
+            if vendor_check.startswith(term_normalized):
+                return True
+
+    return False
+
+
+def matches_filename_term(
+    filename: str, filename_terms: List[str], case_sensitive: bool = False
+) -> Optional[str]:
+    """
+    Check if filename starts with any of the filename terms.
+
+    Args:
+        filename: Filename to check
+        filename_terms: List of filename prefixes to match
+        case_sensitive: Whether matching should be case-sensitive
+
+    Returns:
+        Matching term if found, None otherwise
+    """
+    if not filename or not filename_terms:
+        return None
+
+    filename_check = filename if case_sensitive else filename.upper()
+
+    for term in filename_terms:
+        term_check = term if case_sensitive else term.upper()
+        if filename_check.startswith(term_check):
+            return term
+
+    return None
+
+
+def search_name_table(
+    font_path: Path, search_term: str, case_sensitive: bool = False
+) -> bool:
+    """
+    Search all Name table fields for the specified term.
+
+    Args:
+        font_path: Path to font file
+        search_term: Term to search for in Name table
+        case_sensitive: Whether search should be case-sensitive
+
+    Returns:
+        True if term found in any nameID field
+    """
+    font = None
+    coll = None
+    try:
+        suffix = font_path.suffix.lower()
+        # Use TTCollection for .ttc/.otc
+        if suffix in (".ttc", ".otc"):
+            from fontTools.ttLib import TTCollection
+
+            coll = TTCollection(str(font_path))
+            # policy: use first member
+            font = coll[0]
+        else:
+            from fontTools.ttLib import TTFont
+
+            font = TTFont(str(font_path))
+
+        if "name" not in font:
+            return False
+
+        name_table = font["name"]
+        search_term_check = search_term if case_sensitive else search_term.lower()
+
+        # Search all name records
+        for record in name_table.names:
+            try:
+                name_string = record.toUnicode()
+                if name_string:
+                    name_check = name_string if case_sensitive else name_string.lower()
+                    if search_term_check in name_check:
+                        return True
+            except Exception:
+                continue  # Skip records that can't be decoded
+
+        return False
+
+    except Exception:
+        return False
+
+    finally:
+        try:
+            if coll is not None and hasattr(coll, "close"):
+                coll.close()
+            elif font is not None and hasattr(font, "close"):
+                font.close()
+        except Exception:
+            pass
+
+
 def atomic_move_file(source: Path, target: Path) -> None:
     """
     Move file atomically to prevent race conditions.
@@ -189,22 +348,46 @@ def atomic_move_file(source: Path, target: Path) -> None:
 def create_directory_structure(
     output_dir: Path,
     sort_mode: str = "ALPHABETICAL",
+    filename_terms: Optional[List[str]] = None,
     verbose: bool = False,
 ) -> None:
     """
-    Create base directory structure. All folders are created on-demand
-    as files are moved to prevent empty directories.
+    Create directory structure based on sort mode.
 
     Args:
         output_dir: Base output directory
-        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR") - unused, kept for API consistency
+        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR", "FILENAME_TERM")
+        filename_terms: List of filename prefixes (for creating folders when using -ft)
         verbose: Show detailed information
     """
     # Create base output directory
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # All folders (A-Z, OTHER, vendor folders, _quarantine) are created on-demand
-    # in move_files_to_structure() and move_files_to_quarantine() to avoid empty directories
+    # Create QUARANTINE folder (always needed)
+    quarantine_dir = output_dir / "QUARANTINE"
+    quarantine_dir.mkdir(exist_ok=True)
+
+    # Create folders based on sort mode
+    if sort_mode == "ALPHABETICAL":
+        # Create A-Z folders
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            letter_dir = output_dir / letter
+            letter_dir.mkdir(exist_ok=True)
+
+        # Create OTHER folder
+        other_dir = output_dir / "OTHER"
+        other_dir.mkdir(exist_ok=True)
+    elif sort_mode == "FILENAME_TERM" and filename_terms:
+        # Create folders for each filename term
+        for term in filename_terms:
+            term_dir = output_dir / term
+            term_dir.mkdir(exist_ok=True)
+    # For VENDOR mode, folders are created on-demand as vendors are encountered
+
+    if console and verbose:
+        cs.StatusIndicator("info").add_message(
+            f"Created directory structure in {cs.fmt_file(str(output_dir))}"
+        ).emit()
 
 
 # ============================================================================
@@ -216,6 +399,10 @@ def extract_font_organization_data(
     font_paths: List[str],
     verbose: bool = False,
     sort_mode: str = "ALPHABETICAL",
+    filename_terms: Optional[List[str]] = None,
+    vendor_terms: Optional[List[str]] = None,
+    name_term: Optional[str] = None,
+    case_sensitive: bool = False,
 ) -> Tuple[List[OrganizedFont], List[Tuple[Path, str]], OrganizationStats]:
     """
     Extract metadata and determine organization structure for all fonts.
@@ -223,7 +410,11 @@ def extract_font_organization_data(
     Args:
         font_paths: List of font file paths
         verbose: Show detailed processing information
-        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR")
+        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR", "FILENAME_TERM")
+        filename_terms: List of filename prefixes to filter by (for -ft)
+        vendor_terms: List of vendor ID patterns to filter by (for -vt)
+        name_term: Name table search term (for -nt)
+        case_sensitive: Whether matching should be case-sensitive
 
     Returns:
         Tuple of (list of OrganizedFont objects, list of (failed_path, error_message), stats)
@@ -281,21 +472,32 @@ def extract_font_organization_data(
     for font_info in font_infos:
         font_path = Path(font_info.path).resolve()
 
-        # Extract vendor ID (needed for vendor sorting)
+        # Extract vendor ID (needed for vendor sorting/filtering)
         if font_path not in vendor_cache and font_path not in metadata_errors:
             vendor_id = get_vendor_id(font_path)
-            # Check for bad vendor patterns and convert to UKWN
-            if is_bad_vendor(vendor_id):
-                vendor_id = "UKWN"
             vendor_cache[font_path] = vendor_id
         elif font_path in metadata_errors:
             continue
         else:
             vendor_id = vendor_cache.get(font_path, "UKWN")
-            # Double-check cached vendor ID for bad patterns
-            if is_bad_vendor(vendor_id):
-                vendor_id = "UKWN"
-                vendor_cache[font_path] = vendor_id
+
+        # Apply vendor term filter if specified
+        if vendor_terms:
+            if not matches_vendor_term(vendor_id, vendor_terms, case_sensitive):
+                continue  # Skip this font
+
+        # Apply name table term filter if specified
+        if name_term:
+            if not search_name_table(font_path, name_term, case_sensitive):
+                continue  # Skip this font
+
+        # Apply filename term filter if specified
+        if filename_terms:
+            matching_term = matches_filename_term(
+                font_path.name, filename_terms, case_sensitive
+            )
+            if not matching_term:
+                continue  # Skip this font
 
         # Extract PostScript name (cache metadata)
         if font_path not in metadata_cache and font_path not in metadata_errors:
@@ -395,6 +597,11 @@ def extract_font_organization_data(
         metadata = metadata_cache.get(font_path)
         vendor_id = vendor_cache.get(font_path, "UKWN")
 
+        # Determine name term match directory name if applicable
+        name_term_dir = None
+        if name_term:
+            name_term_dir = sanitize_folder_name(name_term)
+
         # Create OrganizedFont
         organized_font = OrganizedFont(
             source_path=font_path,
@@ -407,6 +614,7 @@ def extract_font_organization_data(
             original_filename=font_path.name,
             metadata=metadata,
             vendor_id=vendor_id,
+            name_term_match=name_term_dir,
         )
 
         organized_fonts.append(organized_font)
@@ -418,6 +626,8 @@ def assign_target_paths(
     organized_fonts: List[OrganizedFont],
     output_dir: Path,
     sort_mode: str = "ALPHABETICAL",
+    filename_terms: Optional[List[str]] = None,
+    vendor_terms: Optional[List[str]] = None,
 ) -> None:
     """
     Assign target paths to OrganizedFont objects based on directory structure.
@@ -426,16 +636,45 @@ def assign_target_paths(
     Args:
         organized_fonts: List of OrganizedFont objects
         output_dir: Base output directory
-        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR")
+        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR", "FILENAME_TERM")
+        filename_terms: List of filename prefixes (for determining folder when using -ft)
+        vendor_terms: List of vendor ID patterns (for determining if vendor should appear in path)
     """
     # Track filenames per folder to handle duplicates
     folder_files: Dict[Tuple[str, ...], List[str]] = defaultdict(list)
 
     for font in organized_fonts:
         # Determine top-level folder based on sort mode
-        if sort_mode == "VENDOR":
+        if font.name_term_match:
+            # Name term mode: name_term/vendor_id or name_term/family_name
+            top_folder = font.name_term_match
+            # If vendor sort is active OR vendor terms are filtered, show vendor in path
+            if font.vendor_id and (sort_mode == "VENDOR" or vendor_terms):
+                # name_term/vendor_id/family_name
+                second_folder = font.vendor_id
+                folder_name = font.folder_name
+                target_dir = output_dir / top_folder / second_folder / folder_name
+                folder_key = (top_folder, second_folder, folder_name)
+            else:
+                # name_term/family_name
+                folder_name = font.folder_name
+                target_dir = output_dir / top_folder / folder_name
+                folder_key = (top_folder, folder_name)
+        elif sort_mode == "VENDOR":
             # Vendor mode: vendor_id/family_name
             top_folder = font.vendor_id or "UKWN"
+            folder_name = font.folder_name
+            target_dir = output_dir / top_folder / folder_name
+            folder_key = (top_folder, folder_name)
+        elif sort_mode == "FILENAME_TERM" and filename_terms:
+            # Filename term mode: filename_term/family_name
+            matching_term = matches_filename_term(
+                font.original_filename, filename_terms, False
+            )
+            if matching_term:
+                top_folder = matching_term
+            else:
+                top_folder = "OTHER"
             folder_name = font.folder_name
             target_dir = output_dir / top_folder / folder_name
             folder_key = (top_folder, folder_name)
@@ -495,7 +734,7 @@ def move_files_to_quarantine(
     stats = OrganizationStats()
     stats.total_files = len(failed_files)
 
-    quarantine_dir = output_dir / "_quarantine"
+    quarantine_dir = output_dir / "QUARANTINE"
 
     # Create quarantine directory if needed
     if not dry_run:
@@ -537,7 +776,7 @@ def move_files_to_quarantine(
 
                 if console and verbose:
                     cs.StatusIndicator("warning").add_file(font_path.name).add_message(
-                        f"→ _quarantine/ ({error_msg})"
+                        f"→ QUARANTINE/ ({error_msg})"
                     ).emit()
 
                 stats.add_quarantine(font_path.name, error_msg)
@@ -555,6 +794,7 @@ def move_files_to_structure(
     organized_fonts: List[OrganizedFont],
     output_dir: Path,
     sort_mode: str = "ALPHABETICAL",
+    filename_terms: Optional[List[str]] = None,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> OrganizationStats:
@@ -564,7 +804,8 @@ def move_files_to_structure(
     Args:
         organized_fonts: List of OrganizedFont objects with target paths set
         output_dir: Base output directory
-        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR")
+        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR", "FILENAME_TERM")
+        filename_terms: List of filename prefixes (for creating folders when using -ft)
         dry_run: Preview mode without moving files
         verbose: Show detailed processing information
 
@@ -576,7 +817,7 @@ def move_files_to_structure(
 
     # Create directory structure
     if not dry_run:
-        create_directory_structure(output_dir, sort_mode, verbose)
+        create_directory_structure(output_dir, sort_mode, filename_terms, verbose)
 
     # Create subdirectories and move files
     for font in organized_fonts:
@@ -753,6 +994,10 @@ def organize_fonts(
     no_preview: bool = False,
     recursive: bool = False,
     sort_mode: str = "ALPHABETICAL",
+    filename_terms: Optional[List[str]] = None,
+    vendor_terms: Optional[List[str]] = None,
+    name_term: Optional[str] = None,
+    case_sensitive: bool = False,
 ) -> OrganizationStats:
     """
     Main orchestration function for font organization.
@@ -764,14 +1009,18 @@ def organize_fonts(
         verbose: Show detailed processing information
         no_preview: Skip preflight preview and confirmation
         recursive: Process directories recursively (default: False)
-        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR")
+        sort_mode: Sort mode ("ALPHABETICAL", "VENDOR", "FILENAME_TERM")
+        filename_terms: List of filename prefixes to filter by (for -ft)
+        vendor_terms: List of vendor ID patterns to filter by (for -vt)
+        name_term: Name table search term (for -nt)
+        case_sensitive: Whether matching should be case-sensitive
 
     Returns:
         OrganizationStats with results
     """
     # Determine output directory
     if output_dir is None:
-        output_dir = source_dir.parent / "Font Library"
+        output_dir = source_dir.parent / "sorted_fonts"
     else:
         output_dir = Path(output_dir)
 
@@ -815,11 +1064,25 @@ def organize_fonts(
         font_paths,
         verbose,
         sort_mode,
+        filename_terms,
+        vendor_terms,
+        name_term,
+        case_sensitive,
     )
+
+    # Check if filters resulted in zero matches
+    if not organized_fonts and (filename_terms or vendor_terms or name_term):
+        if console:
+            cs.StatusIndicator("warning").add_message(
+                "No fonts matched the specified filters"
+            ).emit()
+        return OrganizationStats()
 
     # Assign target paths
     if organized_fonts:
-        assign_target_paths(organized_fonts, output_dir, sort_mode)
+        assign_target_paths(
+            organized_fonts, output_dir, sort_mode, filename_terms, vendor_terms
+        )
 
     # Show preview unless disabled
     if not no_preview:
@@ -848,6 +1111,10 @@ def organize_fonts(
             mode_description = "directory structure"
             if sort_mode == "VENDOR":
                 mode_description = "vendor-based directory structure"
+            elif sort_mode == "FILENAME_TERM":
+                mode_description = "filename-based directory structure"
+            elif name_term:
+                mode_description = "name table-based directory structure"
 
             if not cs.prompt_confirm(
                 f"Ready to organize fonts into {mode_description}",
@@ -862,7 +1129,7 @@ def organize_fonts(
     move_stats = OrganizationStats()
     if organized_fonts:
         move_stats = move_files_to_structure(
-            organized_fonts, output_dir, sort_mode, dry_run, verbose
+            organized_fonts, output_dir, sort_mode, filename_terms, dry_run, verbose
         )
 
     # Move failed files to quarantine
@@ -904,11 +1171,21 @@ QUICK START:
   %(prog)s /path/to/fonts/ -r                 # Include fonts in subfolders
   %(prog)s /path/to/fonts/ -vs                # Group by font maker (vendor)
 
+COMMON TASKS:
+  Find specific fonts:
+    %(prog)s /fonts/ -ft "Arial,Helvetica"    # Only process fonts starting with these names
+    %(prog)s /fonts/ -vt "ADBE"               # Only Adobe fonts (vendor ID)
+    %(prog)s /fonts/ -nt "Condensed"          # Find fonts with "Condensed" in their info
+
+  Organize by different criteria:
+    %(prog)s /fonts/ -vs                      # Group by font maker
+    %(prog)s /fonts/ -ft "A,B,C"              # Create folders for names starting with A, B, or C
+
 TIPS:
-  • Use -n (dry-run) first to preview what will happen
+  • Always use -n (preview) first to see what will happen
   • Use -v (verbose) to see detailed progress
-  • Fonts that can't be processed go into a _quarantine folder
-  • Files are renamed using their embedded PostScript (NameID 6) name
+  • Fonts that can't be processed go to a QUARANTINE folder
+  • Files are renamed to their official PostScript names
         """,
     )
 
@@ -931,7 +1208,7 @@ TIPS:
         "-o",
         "--output-dir",
         metavar="FOLDER",
-        help="Where to save organized fonts (default: creates 'Font Library' folder)",
+        help="Where to save organized fonts (default: creates 'sorted_fonts' folder)",
     )
     basic_group.add_argument(
         "-r",
@@ -953,7 +1230,7 @@ TIPS:
 
     # Organization options
     org_group = parser.add_argument_group(
-        "Organization Methods", "Choose how to organize your fonts:"
+        "Organization Methods", "Choose how to organize your fonts (pick one):"
     )
     org_group.add_argument(
         "-vs",
@@ -961,8 +1238,53 @@ TIPS:
         action="store_true",
         help="Organize by font maker/vendor (e.g., Adobe, Monotype, Google)",
     )
+    org_group.add_argument(
+        "-ft",
+        "--filename-term",
+        metavar="NAMES",
+        help='Create folders for specific font names (e.g., "Arial,Helvetica,Times")',
+    )
+
+    # Filter options
+    filter_group = parser.add_argument_group(
+        "Filter Options", "Only process fonts that match these criteria:"
+    )
+    filter_group.add_argument(
+        "-vt",
+        "--vendID-term",
+        metavar="VENDORS",
+        help='Only process fonts from specific makers (e.g., "ADBE" for Adobe, "GOOG" for Google)\n'
+        'Add ! for exact match: "ITC!" matches only "ITC", not "ITCF"',
+    )
+    filter_group.add_argument(
+        "-nt",
+        "--nametable-term",
+        metavar="SEARCH",
+        help='Find fonts containing this text anywhere in their metadata (e.g., "Condensed", "Bold")',
+    )
+    filter_group.add_argument(
+        "-cs",
+        "--case-sensitive",
+        action="store_true",
+        help="Make searches case-sensitive (default: ArIaL matches Arial)",
+    )
 
     args = parser.parse_args()
+
+    # Validate mutual exclusivity
+    if args.vendor_sort and args.filename_term:
+        if console:
+            cs.StatusIndicator("error").with_explanation(
+                "Cannot use --vendor-sort (-vs) and --filename-term (-ft) together. They are mutually exclusive."
+            ).emit()
+        return 1
+
+    if args.nametable_term and args.filename_term:
+        if console:
+            cs.StatusIndicator("error").with_explanation(
+                "Cannot use --nametable-term (-nt) and --filename-term (-ft) together. They are mutually exclusive."
+            ).emit()
+        return 1
 
     source_dir = Path(args.source_dir).expanduser().resolve()
 
@@ -985,21 +1307,46 @@ TIPS:
     if args.output_dir:
         output_dir = Path(args.output_dir).expanduser().resolve()
 
-    # Parse sort mode
+    # Parse sort mode and filters
     sort_mode = "ALPHABETICAL"
+    filename_terms = None
+    vendor_terms = None
+    name_term = None
+
     if args.vendor_sort:
         sort_mode = "VENDOR"
+    elif args.filename_term:
+        sort_mode = "FILENAME_TERM"
+        filename_terms = [
+            term.strip() for term in args.filename_term.split(",") if term.strip()
+        ]
+
+    if args.vendID_term:
+        vendor_terms = [
+            term.strip() for term in args.vendID_term.split(",") if term.strip()
+        ]
+
+    if args.nametable_term:
+        name_term = args.nametable_term.strip()
 
     # Show summary
     if console:
         mode = "DRY RUN" if args.dry_run else "ORGANIZE"
         mode_info = f"Mode: {mode}\n"
-        mode_info += f"Sort by: {sort_mode}\n"
-        mode_info += f"Input Directory: {cs.fmt_file(str(source_dir))}\n"
-        mode_info += f"Output Directory: {cs.fmt_file(str(output_dir or (source_dir.parent / 'Font Library')))}"
+        mode_info += f"Sort: {sort_mode}\n"
+        if filename_terms:
+            mode_info += f"Filename terms: {', '.join(filename_terms)}\n"
+        if vendor_terms:
+            mode_info += f"Vendor terms: {', '.join(vendor_terms)}\n"
+        if name_term:
+            mode_info += f"Name table term: {name_term}\n"
+        if args.case_sensitive:
+            mode_info += "Case-sensitive: enabled\n"
+        mode_info += f"Source: {cs.fmt_file(str(source_dir))}\n"
+        mode_info += f"Output: {cs.fmt_file(str(output_dir or (source_dir.parent / 'sorted_fonts')))}"
         cs.print_panel(
             mode_info,
-            title="Font Files Simple Sorter",
+            title="Font Files Organizer",
             border_style="blue",
         )
 
@@ -1012,6 +1359,10 @@ TIPS:
         no_preview=args.no_preview,
         recursive=args.recursive,
         sort_mode=sort_mode,
+        filename_terms=filename_terms,
+        vendor_terms=vendor_terms,
+        name_term=name_term,
+        case_sensitive=args.case_sensitive,
     )
 
     # Final summary
@@ -1045,7 +1396,7 @@ TIPS:
                 )
             cs.emit("")
             cs.StatusIndicator("info").add_message(
-                "Quarantined files moved to: _quarantine/ directory"
+                "Quarantined files moved to QUARANTINE/ directory"
             ).emit()
 
         # Show other errors

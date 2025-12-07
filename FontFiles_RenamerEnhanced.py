@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Font File Renamer - PostScript name-based renaming with version priority
+Font File Renamer - PostScript name-based renaming with intelligent quality scoring
 
-Renames font files to their PostScript names with intelligent version handling:
+Renames font files to their PostScript names with comprehensive quality analysis:
 - Two-pass renaming (temp UUID → PostScript names)
-- Version-aware priority naming (highest version gets clean name)
+- Quality-aware priority (considers revision, language support, features, glyphs)
 - Multiple fonts with same PS name get ~001, ~002, etc. suffixes
 - Per-directory isolation (processes each directory independently)
 - Cached metadata support (speeds up repeated runs)
@@ -18,12 +18,9 @@ Usage:
 Options:
     -r, --recursive     Process directories recursively
     -n, --dry-run       Preview changes without renaming
-    -ra, --rename-all     Rename even fonts with invalid PostScript names
-    -V, --verbose,        Show detailed processing information
-
-Future enhancement note:
-    Could integrate term reordering (width/weight/style) like Filename_Reorder_*.py
-    to normalize PostScript name structure before renaming files.
+    -ra, --rename-all   Rename even fonts with invalid PostScript names
+    -v, --verbose       Show detailed processing information
+    --show-quality      Display quality scores in preview
 """
 
 import json
@@ -38,7 +35,7 @@ from dataclasses import dataclass, asdict, field
 
 from fontTools.ttLib import TTFont
 
-# Add project root to path for FontCore imports (works for root and subdirectory scripts)
+# Add project root to path for FontCore imports
 import sys
 from pathlib import Path as PathLib
 
@@ -52,14 +49,8 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 # Core module imports
-import FontCore.core_console_styles as cs
-from FontCore.core_file_collector import collect_font_files
-from FontCore.core_font_metadata import (
-    FontMetadata,
-    extract_metadata,
-    detect_font_format,
-)
-from FontCore.core_font_utils import is_valid_postscript_name
+import FontCore.core_console_styles as cs  # noqa: E402
+from FontCore.core_file_collector import collect_font_files  # noqa: E402
 
 console = cs.get_console()
 
@@ -70,9 +61,167 @@ console = cs.get_console()
 INDEX_FILENAME = ".font_rename_cache.json"
 FONT_EXTENSIONS = {".ttf", ".otf", ".woff", ".woff2"}
 
+# Quality scoring weights
+WEIGHT_REVISION = 400  # 40% - Font revision number
+WEIGHT_LANGUAGE = 2.5  # 25% - Language support breadth
+WEIGHT_FEATURES = 2.0  # 20% - OpenType features
+WEIGHT_GLYPHS = 100  # 10% - Meaningful glyph count increase
+WEIGHT_RECENCY = 50  # 5% - Creation date recency
+
 # ============================================================================
 # Data Classes
 # ============================================================================
+
+
+@dataclass
+class FontMetadata:
+    """Enhanced metadata with quality scoring"""
+
+    # Original fields
+    ps_name: str
+    font_revision: float
+    version_string: str
+    file_size: int
+    glyph_count: int
+    head_created: Optional[float]
+    head_modified: Optional[float]
+    file_path: str
+    original_filename: Optional[str] = None
+    detected_format: Optional[str] = None
+
+    # New quality indicators
+    language_support: set = field(default_factory=set)
+    opentype_features: set = field(default_factory=set)
+    quality_score: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        # Convert sets to lists for JSON serialization
+        data["language_support"] = list(self.language_support)
+        data["opentype_features"] = list(self.opentype_features)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FontMetadata":
+        # Convert lists back to sets
+        if "language_support" in data:
+            data["language_support"] = set(data["language_support"])
+        else:
+            data["language_support"] = set()
+        if "opentype_features" in data:
+            data["opentype_features"] = set(data["opentype_features"])
+        else:
+            data["opentype_features"] = set()
+        return cls(**data)
+
+    def calculate_quality_score(self, fonts_in_group: List["FontMetadata"]) -> float:
+        """
+        Calculate comprehensive quality score for prioritization.
+        Higher score = better font to keep as primary.
+        """
+        score = 0.0
+
+        # 1. Font Revision (weight: 40%)
+        score += (self.font_revision or 0.0) * WEIGHT_REVISION
+
+        # 2. Language Support (weight: 25%)
+        lang_score = 0
+        if (
+            "cyrillic" in self.language_support
+            and "latin-extended" in self.language_support
+        ):
+            lang_score = 100  # Pan-European
+        elif "cyrillic" in self.language_support or "greek" in self.language_support:
+            lang_score = 50
+        elif "latin-extended" in self.language_support:
+            lang_score = 25
+        elif "vietnamese" in self.language_support:
+            lang_score = 20
+        score += lang_score * WEIGHT_LANGUAGE
+
+        # 3. OpenType Features (weight: 20%)
+        valuable_features = {
+            "kern",
+            "liga",
+            "dlig",
+            "smcp",
+            "c2sc",
+            "onum",
+            "lnum",
+            "tnum",
+            "frac",
+            "sups",
+            "subs",
+        }
+        feature_score = len(self.opentype_features & valuable_features) * 10
+        feature_score += len(self.opentype_features - valuable_features) * 2
+        score += min(feature_score, 200) * WEIGHT_FEATURES
+
+        # 4. Meaningful Glyph Count (weight: 10%)
+        if fonts_in_group and len(fonts_in_group) > 1:
+            glyph_counts = [f.glyph_count for f in fonts_in_group]
+            median_glyphs = sorted(glyph_counts)[len(glyph_counts) // 2]
+
+            if median_glyphs > 0 and self.glyph_count >= median_glyphs * 1.10:
+                # Reward 10%+ increases
+                glyph_bonus = ((self.glyph_count / median_glyphs) - 1.0) * WEIGHT_GLYPHS
+                score += min(glyph_bonus, WEIGHT_GLYPHS)
+
+        # 5. Creation Date Recency (weight: 5%)
+        # Younger creation date suggests newer revision
+        if self.head_created:
+            # Mac epoch for Jan 1, 2020: 3786825600.0
+            # Normalize to 0-50 range based on recency
+            year_2020 = 3786825600.0
+            if self.head_created >= year_2020:
+                # Scale from 2020 to 2025 (5 years)
+                recency = min((self.head_created - year_2020) / (86400 * 365 * 5), 1.0)
+                score += recency * WEIGHT_RECENCY
+
+        return score
+
+    def get_quality_breakdown(self) -> Dict[str, float]:
+        """Get breakdown of quality score components for display"""
+        return {
+            "revision": (self.font_revision or 0.0) * WEIGHT_REVISION,
+            "language": self._get_language_score() * WEIGHT_LANGUAGE,
+            "features": self._get_feature_score() * WEIGHT_FEATURES,
+            "total": self.quality_score or 0.0,
+        }
+
+    def _get_language_score(self) -> float:
+        """Calculate language score component"""
+        if (
+            "cyrillic" in self.language_support
+            and "latin-extended" in self.language_support
+        ):
+            return 100.0
+        elif "cyrillic" in self.language_support or "greek" in self.language_support:
+            return 50.0
+        elif "latin-extended" in self.language_support:
+            return 25.0
+        elif "vietnamese" in self.language_support:
+            return 20.0
+        return 0.0
+
+    def _get_feature_score(self) -> float:
+        """Calculate feature score component"""
+        valuable_features = {
+            "kern",
+            "liga",
+            "dlig",
+            "smcp",
+            "c2sc",
+            "onum",
+            "lnum",
+            "tnum",
+            "frac",
+            "sups",
+            "subs",
+        }
+        feature_score = len(self.opentype_features & valuable_features) * 10
+        feature_score += len(self.opentype_features - valuable_features) * 2
+        return min(feature_score, 200)
 
 
 @dataclass
@@ -105,7 +254,6 @@ def load_cache(directory: Path) -> Dict[str, FontMetadata]:
         with open(cache_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # Validate cache structure
         if not isinstance(data, dict):
             raise ValueError("Cache is not a dictionary")
 
@@ -116,7 +264,6 @@ def load_cache(directory: Path) -> Dict[str, FontMetadata]:
                     continue
                 cache[filename] = FontMetadata.from_dict(meta)
             except Exception as e:
-                # Skip invalid entries but continue loading others
                 if console:
                     cs.StatusIndicator("warning").add_file(filename).with_explanation(
                         f"Invalid cache entry: {e}"
@@ -129,7 +276,6 @@ def load_cache(directory: Path) -> Dict[str, FontMetadata]:
             cs.StatusIndicator("warning").with_explanation(
                 f"Cache file corrupted (invalid JSON): {e}. Recreating cache."
             ).emit()
-        # Remove corrupted cache
         try:
             cache_path.unlink()
         except Exception:
@@ -140,7 +286,6 @@ def load_cache(directory: Path) -> Dict[str, FontMetadata]:
             cs.StatusIndicator("warning").with_explanation(
                 f"Failed to load cache: {e}. Recreating cache."
             ).emit()
-        # Remove problematic cache
         try:
             cache_path.unlink()
         except Exception:
@@ -191,10 +336,7 @@ def cleanup_cache(directory: Path) -> None:
 
 
 def detect_font_format(font: TTFont) -> str:
-    """
-    Detect font format from the font file data.
-    Returns lowercase format string: "otf", "ttf", "woff", or "woff2"
-    """
+    """Detect font format from the font file data"""
     try:
         sfnt_version = font.reader.sfntVersion
         if sfnt_version == b"wOFF":
@@ -206,17 +348,82 @@ def detect_font_format(font: TTFont) -> str:
         elif sfnt_version == b"\x00\x01\x00\x00" or sfnt_version == b"true":
             return "ttf"
         else:
-            # Fallback: check for CFF table (OTF uses CFF, TTF uses glyf)
             if "CFF " in font:
                 return "otf"
             return "ttf"
     except Exception:
-        # If detection fails, default to ttf
         return "ttf"
 
 
+def detect_language_support_from_font(font: TTFont) -> set:
+    """Detect language support from Unicode coverage in opened font"""
+    try:
+        cmap = font.getBestCmap()
+        if not cmap:
+            return {"latin"}
+
+        codepoints = set(cmap.keys())
+        languages = set()
+
+        # Latin: U+0000-U+007F (Basic Latin)
+        if any(0x0000 <= cp <= 0x007F for cp in codepoints):
+            languages.add("latin")
+
+        # Cyrillic: U+0400-U+04FF
+        if any(0x0400 <= cp <= 0x04FF for cp in codepoints):
+            languages.add("cyrillic")
+
+        # Greek: U+0370-U+03FF
+        if any(0x0370 <= cp <= 0x03FF for cp in codepoints):
+            languages.add("greek")
+
+        # Extended Latin (Pan-European): U+0100-U+017F
+        if any(0x0100 <= cp <= 0x017F for cp in codepoints):
+            languages.add("latin-extended")
+
+        # Vietnamese: U+1E00-U+1EFF
+        if any(0x1E00 <= cp <= 0x1EFF for cp in codepoints):
+            languages.add("vietnamese")
+
+        # Arabic: U+0600-U+06FF
+        if any(0x0600 <= cp <= 0x06FF for cp in codepoints):
+            languages.add("arabic")
+
+        # Hebrew: U+0590-U+05FF
+        if any(0x0590 <= cp <= 0x05FF for cp in codepoints):
+            languages.add("hebrew")
+
+        return languages
+    except Exception:
+        return {"latin"}
+
+
+def extract_opentype_features_from_font(font: TTFont) -> set:
+    """Extract OpenType feature tags from GSUB/GPOS tables in opened font"""
+    features = set()
+
+    try:
+        # GSUB table (substitution features)
+        if "GSUB" in font:
+            gsub = font["GSUB"]
+            if hasattr(gsub, "table") and hasattr(gsub.table, "FeatureList"):
+                for feature in gsub.table.FeatureList.FeatureRecord:
+                    features.add(feature.FeatureTag)
+
+        # GPOS table (positioning features)
+        if "GPOS" in font:
+            gpos = font["GPOS"]
+            if hasattr(gpos, "table") and hasattr(gpos.table, "FeatureList"):
+                for feature in gpos.table.FeatureList.FeatureRecord:
+                    features.add(feature.FeatureTag)
+    except Exception:
+        pass
+
+    return features
+
+
 def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
-    """Extract metadata from a font file"""
+    """Extract enhanced metadata from a font file"""
     try:
         font = TTFont(str(font_path))
 
@@ -241,6 +448,12 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
         # Detect font format from file data
         detected_format = detect_font_format(font)
 
+        # Language support detection
+        language_support = detect_language_support_from_font(font)
+
+        # OpenType features extraction
+        opentype_features = extract_opentype_features_from_font(font)
+
         file_size = font_path.stat().st_size
 
         font.close()
@@ -256,6 +469,8 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
             file_path=str(font_path),
             original_filename=font_path.name,
             detected_format=detected_format,
+            language_support=language_support,
+            opentype_features=opentype_features,
         )
     except Exception as e:
         if console:
@@ -281,7 +496,32 @@ def contains_problematic_pattern(ps_name: str) -> Tuple[bool, str]:
             return True, pattern
     return False, ""
 
-    # Check for problematic patterns
+
+def is_valid_postscript_name(ps_name: str) -> Tuple[bool, str]:
+    """Validate PostScript name is safe for filename"""
+    if not ps_name or ps_name.strip() == "":
+        return False, "empty name"
+
+    if ps_name.isspace():
+        return False, "contains only spaces"
+
+    for char in ps_name:
+        code = ord(char)
+        if code < 32 or code == 127:
+            return False, f"contains control character (ASCII {code})"
+
+    problematic_chars = ["?", "/", "\\", ":", "*", '"', "<", ">", "|"]
+    for char in problematic_chars:
+        if char in ps_name:
+            return False, f"contains '{char}'"
+
+    if ps_name.startswith(" ") or ps_name.endswith(" "):
+        return False, "begins or ends with a space"
+
+    forbidden_first_chars = ["_", "-", "."]
+    if ps_name[0] in forbidden_first_chars:
+        return False, f"begins with '{ps_name[0]}'"
+
     has_problem, pattern = contains_problematic_pattern(ps_name)
     if has_problem:
         return False, f"contains '{pattern}'"
@@ -290,26 +530,21 @@ def contains_problematic_pattern(ps_name: str) -> Tuple[bool, str]:
 
 
 # ============================================================================
-# Priority Sorting
+# Quality-Based Priority Sorting
 # ============================================================================
 
 
-def sort_by_version_priority(metadata_list: List[FontMetadata]) -> List[FontMetadata]:
+def sort_by_quality_score(metadata_list: List[FontMetadata]) -> List[FontMetadata]:
     """
-    Sort fonts by version priority:
-    1. Highest font revision
-    2. Oldest creation date (original design)
-    3. Most recent modification date (latest fixes)
+    Sort fonts by comprehensive quality score.
+    Considers: revision, language support, features, glyphs, creation date.
     """
+    # Calculate quality scores for all fonts in the group
+    for meta in metadata_list:
+        meta.quality_score = meta.calculate_quality_score(metadata_list)
 
-    def sort_key(meta: FontMetadata) -> tuple:
-        return (
-            -meta.font_revision if meta.font_revision else float("-inf"),
-            meta.head_created if meta.head_created else float("inf"),
-            -meta.head_modified if meta.head_modified else float("-inf"),
-        )
-
-    return sorted(metadata_list, key=sort_key)
+    # Sort by quality score (highest first)
+    return sorted(metadata_list, key=lambda m: m.quality_score or 0.0, reverse=True)
 
 
 # ============================================================================
@@ -347,29 +582,28 @@ def assign_final_names(
     ps_name_groups: Dict[str, List[FontMetadata]],
 ) -> Dict[Path, str]:
     """
-    Assign final names based on PostScript name and version priority.
-    Highest version gets clean name, others get ~001, ~002, etc.
+    Assign final names based on PostScript name and quality score.
+    Highest quality gets clean name, others get ~001, ~002, etc.
     """
     rename_map: Dict[Path, str] = {}
 
     for group_key, metadata_list in ps_name_groups.items():
-        sorted_fonts = sort_by_version_priority(metadata_list)
-        # Get ps_name from metadata (all items in group have same ps_name)
+        # Use quality-based sorting
+        sorted_fonts = sort_by_quality_score(metadata_list)
         ps_name = sorted_fonts[0].ps_name
 
         for idx, meta in enumerate(sorted_fonts):
             original_path = Path(meta.file_path)
-            # Use detected format if available, otherwise fallback to file extension
             if meta.detected_format:
                 ext = f".{meta.detected_format}"
             else:
                 ext = original_path.suffix.lower()
 
             if idx == 0:
-                # Highest priority gets clean name
+                # Highest quality gets clean name
                 new_name = f"{ps_name}{ext}"
             else:
-                # Lower priority gets counter suffix
+                # Lower quality gets counter suffix
                 new_name = f"{ps_name}~{idx:03d}{ext}"
 
             rename_map[original_path] = new_name
@@ -383,12 +617,10 @@ def resolve_name_conflict(
     """
     Resolve naming conflicts by adding _conflict001, _conflict002, etc.
     Returns resolved name, or None if too many conflicts (>999).
-    Validates that target path is writable before returning.
     """
     target_path = parent_dir / base_name
 
     if not target_path.exists() or target_path == exclude_path:
-        # Validate parent directory is writable
         try:
             if not parent_dir.exists():
                 parent_dir.mkdir(parents=True, exist_ok=True)
@@ -405,7 +637,6 @@ def resolve_name_conflict(
         new_name = f"{stem}_conflict{counter:03d}{ext}"
         target_path = parent_dir / new_name
         if not target_path.exists() or target_path == exclude_path:
-            # Validate parent directory is writable
             try:
                 if not os.access(parent_dir, os.W_OK):
                     return None
@@ -419,10 +650,7 @@ def resolve_name_conflict(
 def execute_single_rename(
     temp_path: Path, new_name: str, original_name: str, dry_run: bool, verbose: bool
 ) -> Tuple[bool, Optional[str]]:
-    """
-    Execute or preview a single rename.
-    Returns (success, error_message)
-    """
+    """Execute or preview a single rename"""
     if dry_run:
         if console and verbose:
             cs.StatusIndicator("info", dry_run=True).add_values(
@@ -452,9 +680,7 @@ def execute_final_renames(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> RenameStats:
-    """
-    Phase 2: Execute final renames from temp names to PostScript names
-    """
+    """Phase 2: Execute final renames from temp names to PostScript names"""
     stats = RenameStats()
 
     for temp_path, new_name in rename_map.items():
@@ -502,23 +728,22 @@ def restore_temp_file(temp_path: Path, original_path: Path, dry_run: bool) -> No
             if temp_path.exists():
                 temp_path.rename(original_path)
         except FileNotFoundError:
-            # Temp file already gone, nothing to restore
             pass
         except PermissionError as e:
             if console:
-                cs.StatusIndicator("error").add_file(
+                cs.StatusIndicator("warning").add_file(
                     original_path.name
                 ).with_explanation(
                     f"Cannot restore temp file (permission denied): {e}"
                 ).emit()
         except OSError as e:
             if console:
-                cs.StatusIndicator("error").add_file(
+                cs.StatusIndicator("warning").add_file(
                     original_path.name
                 ).with_explanation(f"Cannot restore temp file: {e}").emit()
         except Exception as e:
             if console:
-                cs.StatusIndicator("error").add_file(
+                cs.StatusIndicator("warning").add_file(
                     original_path.name
                 ).with_explanation(f"Unexpected error restoring temp file: {e}").emit()
 
@@ -531,10 +756,7 @@ def process_single_font_metadata(
     dry_run: bool,
     verbose: bool,
 ) -> Optional[FontMetadata]:
-    """
-    Extract and validate metadata for a single font.
-    Returns None if font should be skipped.
-    """
+    """Extract and validate metadata for a single font"""
     original_name = original_path.name
 
     # Try cache first
@@ -573,21 +795,16 @@ def process_single_font_metadata(
 
 
 def collect_directory_fonts(directory: Path) -> List[Path]:
-    """Collect font files from directory, excluding temp files and cache.
-    Handles case-insensitive extensions (e.g., .otf, .OTF, .Otf).
-    """
+    """Collect font files from directory, excluding temp files and cache"""
     font_files = []
     for ext in FONT_EXTENSIONS:
-        # Search for both lowercase and uppercase extension variants
         font_files.extend(directory.glob(f"*{ext}"))
         font_files.extend(directory.glob(f"*{ext.upper()}"))
 
-    # Deduplicate (same file might match both patterns) and filter
     seen = set()
     result = []
     for f in font_files:
         if f not in seen:
-            # Exclude temp files and cache
             if not f.name.startswith("_tmp_") and f.name != INDEX_FILENAME:
                 seen.add(f)
                 result.append(f)
@@ -600,22 +817,15 @@ def check_filesystem_space(directory: Path, required_bytes: int) -> bool:
     try:
         stat = shutil.disk_usage(directory)
         free_space = stat.free
-        # Require at least 2x the space needed for safety
         return free_space >= (required_bytes * 2)
     except OSError:
-        # If we can't check, assume it's okay (don't block operations)
         return True
 
 
 def _prepare_directory(
     directory: Path, dry_run: bool, verbose: bool
 ) -> Tuple[List[Path], Dict[Path, Path]]:
-    """
-    Prepare directory for processing: collect files, check space, rename to temp.
-
-    Returns:
-        Tuple of (font_files, temp_mapping)
-    """
+    """Prepare directory for processing: collect files, check space, rename to temp"""
     font_files = collect_directory_fonts(directory)
     if not font_files:
         return [], {}
@@ -625,7 +835,6 @@ def _prepare_directory(
             f"Processing {cs.fmt_count(len(font_files))} files in {cs.fmt_file(str(directory))}"
         ).emit()
 
-    # Check filesystem space before operations (estimate: assume average 100KB per font)
     if not dry_run:
         estimated_space = len(font_files) * 100 * 1024
         if not check_filesystem_space(directory, estimated_space):
@@ -634,7 +843,6 @@ def _prepare_directory(
                     "Insufficient filesystem space - operations may fail"
                 ).emit()
 
-    # Phase 1: Rename to temp names
     temp_mapping = rename_to_temp(font_files, dry_run)
 
     return font_files, temp_mapping
@@ -648,13 +856,7 @@ def _extract_and_group_metadata(
     verbose: bool,
     stats: RenameStats,
 ) -> Tuple[Dict[Path, FontMetadata], Dict[str, List[FontMetadata]]]:
-    """
-    Extract metadata from fonts and group by PostScript name and format.
-    OTF and TTF files with the same PostScript name are treated as separate files.
-
-    Returns:
-        Tuple of (font_metadata, ps_name_groups)
-    """
+    """Extract metadata from fonts and group by PostScript name and format"""
     font_metadata: Dict[Path, FontMetadata] = {}
 
     for temp_path, original_path in temp_mapping.items():
@@ -672,17 +874,14 @@ def _extract_and_group_metadata(
     if not font_metadata:
         return {}, {}
 
-    # Group by PostScript name AND format (OTF and TTF with same name are different files)
+    # Group by PostScript name AND format
     ps_name_groups: Dict[str, List[FontMetadata]] = {}
     for metadata in font_metadata.values():
         ps_name = metadata.ps_name
-        # Use detected format, fallback to file extension if not detected
         if metadata.detected_format:
             format_key = metadata.detected_format
         else:
-            # Fallback to file extension for grouping
             format_key = Path(metadata.file_path).suffix.lower().lstrip(".")
-        # Composite key: PostScript name + format
         group_key = f"{ps_name}|{format_key}"
         if group_key not in ps_name_groups:
             ps_name_groups[group_key] = []
@@ -700,38 +899,31 @@ def process_directory(
     """Process all font files in a single directory"""
     stats = RenameStats()
 
-    # Prepare directory: collect files, check space, rename to temp
     font_files, temp_mapping = _prepare_directory(directory, dry_run, verbose)
     if not font_files:
         return stats
 
     stats.total_files = len(font_files)
 
-    # Load cache
     cache = load_cache(directory)
 
-    # Extract metadata and group by PostScript name
     font_metadata, ps_name_groups = _extract_and_group_metadata(
         temp_mapping, cache, rename_all, dry_run, verbose, stats
     )
 
-    # Save cache
     if not dry_run:
         save_cache(directory, cache)
 
     if not font_metadata:
         return stats
 
-    # Assign final names with priority
     rename_map = assign_final_names(ps_name_groups)
 
-    # Execute final renames
     rename_stats = execute_final_renames(rename_map, font_metadata, dry_run, verbose)
     stats.renamed = rename_stats.renamed
     stats.skipped += rename_stats.skipped
     stats.errors.extend(rename_stats.errors)
 
-    # Cleanup cache
     if not dry_run:
         cleanup_cache(directory)
 
@@ -751,28 +943,24 @@ class RenamePreview:
     original_name: str
     new_name: str
     ps_name: str
-    priority: int  # 0 = highest priority (clean name), 1+ = ~001, ~002, etc.
+    priority: int
+    quality_score: float = 0.0
+    metadata: Optional[FontMetadata] = None
 
 
 def analyze_renames(
     font_paths: List[str],
     rename_all: bool = False,
 ) -> Dict[str, List[RenamePreview]]:
-    """
-    Analyze what renames would occur without actually performing them.
-    Returns dict mapping directory -> list of RenamePreview objects.
-    """
+    """Analyze what renames would occur without actually performing them"""
     dirs_to_process = group_files_by_directory(font_paths)
     previews_by_dir: Dict[str, List[RenamePreview]] = {}
 
     for directory, files_in_dir in dirs_to_process.items():
-        # Simulate the renaming process without actually renaming
         font_files = [Path(f) for f in files_in_dir]
 
-        # Load cache
         cache = load_cache(directory)
 
-        # Extract metadata for all fonts (without temp renaming)
         font_metadata: Dict[Path, FontMetadata] = {}
         for font_path in font_files:
             metadata = extract_metadata(font_path)
@@ -780,7 +968,6 @@ def analyze_renames(
             if metadata is None:
                 continue
 
-            # Validate PostScript name
             is_valid, _ = is_valid_postscript_name(metadata.ps_name)
             if not is_valid and not rename_all:
                 continue
@@ -792,43 +979,46 @@ def analyze_renames(
         if not font_metadata:
             continue
 
-        # Group by PostScript name AND format (OTF and TTF with same name are different files)
+        # Group by PostScript name AND format
         ps_name_groups: Dict[str, List[FontMetadata]] = {}
-        for metadata in font_metadata.values():
+        # Create reverse mapping from file_path string to original font_path key
+        path_to_original: Dict[Path, Path] = {}
+        for font_path, metadata in font_metadata.items():
             ps_name = metadata.ps_name
-            # Use detected format, fallback to file extension if not detected
             if metadata.detected_format:
                 format_key = metadata.detected_format
             else:
-                # Fallback to file extension for grouping
                 format_key = Path(metadata.file_path).suffix.lower().lstrip(".")
-            # Composite key: PostScript name + format
             group_key = f"{ps_name}|{format_key}"
             if group_key not in ps_name_groups:
                 ps_name_groups[group_key] = []
             ps_name_groups[group_key].append(metadata)
+            # Map the file_path (as Path) back to original font_path key
+            path_to_original[Path(metadata.file_path).resolve()] = font_path.resolve()
 
-        # Assign final names with priority (reuse existing function)
+        # assign_final_names calculates quality scores via sort_by_quality_score
+        # Since metadata objects are shared, scores are set on the objects in font_metadata
         rename_map = assign_final_names(ps_name_groups)
 
-        # Build preview list
         previews = []
         for original_path, new_name in rename_map.items():
-            # Skip if name unchanged
             if original_path.name == new_name:
                 continue
 
-            # Find metadata to get PS name and priority
-            meta = font_metadata.get(original_path)
+            # Resolve paths for consistent matching
+            resolved_path = original_path.resolve()
+            original_font_path = path_to_original.get(resolved_path)
+            if original_font_path is None:
+                # Fallback: try direct lookup
+                original_font_path = original_path
+            meta = font_metadata.get(original_font_path)
             if not meta:
                 continue
 
             ps_name = meta.ps_name
-            # Determine priority (0 = clean name, 1+ = ~001, ~002, etc.)
             priority = 0
             if "~" in new_name:
                 try:
-                    # Extract priority from ~001 format
                     match = re.search(r"~(\d{3})", new_name)
                     if match:
                         priority = int(match.group(1))
@@ -842,6 +1032,8 @@ def analyze_renames(
                     new_name=new_name,
                     ps_name=ps_name,
                     priority=priority,
+                    quality_score=meta.quality_score or 0.0,
+                    metadata=meta,
                 )
             )
 
@@ -852,24 +1044,15 @@ def analyze_renames(
 
 
 def highlight_differences_pair(original: str, new: str) -> Tuple[str, str]:
-    """
-    Highlight differences between two strings using StatusIndicator color scheme.
-    Returns tuple of (highlighted_original, highlighted_new).
-
-    Uses StatusIndicator colors:
-    - Original differences: value.before (turquoise2)
-    - New differences: value.after (magenta2)
-    """
+    """Highlight differences between two strings using StatusIndicator colors"""
     if not cs.RICH_AVAILABLE or original == new:
         return original, new
 
-    # Find common prefix
     prefix_len = 0
     min_len = min(len(original), len(new))
     while prefix_len < min_len and original[prefix_len] == new[prefix_len]:
         prefix_len += 1
 
-    # Find common suffix (after prefix)
     suffix_len = 0
     orig_remaining = len(original) - prefix_len
     new_remaining = len(new) - prefix_len
@@ -879,7 +1062,6 @@ def highlight_differences_pair(original: str, new: str) -> Tuple[str, str]:
     ):
         suffix_len += 1
 
-    # Build original with highlighted differences
     orig_parts = []
     if prefix_len > 0:
         orig_parts.append(original[:prefix_len])
@@ -890,7 +1072,6 @@ def highlight_differences_pair(original: str, new: str) -> Tuple[str, str]:
         orig_parts.append(original[-suffix_len:])
     highlighted_original = "".join(orig_parts)
 
-    # Build new with highlighted differences
     new_parts = []
     if prefix_len > 0:
         new_parts.append(new[:prefix_len])
@@ -904,8 +1085,35 @@ def highlight_differences_pair(original: str, new: str) -> Tuple[str, str]:
     return highlighted_original, highlighted_new
 
 
-def show_preflight_preview(previews_by_dir: Dict[str, List[RenamePreview]]) -> None:
-    """Display a preview of what will be renamed."""
+def format_language_support(lang_set: set) -> str:
+    """Format language support for display"""
+    if not lang_set:
+        return "Latin"
+
+    langs = []
+    if "cyrillic" in lang_set and "latin-extended" in lang_set:
+        langs.append("Pan-European")
+    elif "cyrillic" in lang_set:
+        langs.append("Cyrillic")
+    elif "latin-extended" in lang_set:
+        langs.append("Latin-Ext")
+
+    if "greek" in lang_set and "greek" not in [lang.lower() for lang in langs]:
+        langs.append("Greek")
+    if "vietnamese" in lang_set:
+        langs.append("Vietnamese")
+    if "arabic" in lang_set:
+        langs.append("Arabic")
+    if "hebrew" in lang_set:
+        langs.append("Hebrew")
+
+    return ", ".join(langs) if langs else "Latin"
+
+
+def show_preflight_preview(
+    previews_by_dir: Dict[str, List[RenamePreview]], show_quality: bool = False
+) -> None:
+    """Display a preview of what will be renamed"""
     cs.emit("")
     cs.StatusIndicator("info").add_message("Rename Preview").emit()
 
@@ -916,27 +1124,39 @@ def show_preflight_preview(previews_by_dir: Dict[str, List[RenamePreview]]) -> N
     cs.emit(f"{cs.indent(1)}Directories affected: {cs.fmt_count(total_dirs)}")
     cs.emit("")
 
-    # Show changes in streamlined table with highlighted differences
     if cs.RICH_AVAILABLE and console:
         table = cs.create_table(show_header=True)
         if table:
             table.add_column("Original Name", style="lighttext", no_wrap=False)
             table.add_column("New Name", style="lighttext", no_wrap=False)
 
+            if show_quality:
+                table.add_column("Quality", style="cyan", justify="right", width=8)
+                table.add_column("Rev", style="dim", justify="right", width=6)
+                table.add_column("Languages", style="dim", no_wrap=False, width=15)
+                table.add_column("Features", style="dim", justify="right", width=8)
+
             for dir_path, previews in sorted(previews_by_dir.items()):
                 for preview in sorted(previews, key=lambda p: p.original_name):
-                    # Highlight differences in both original and new names
                     highlighted_orig, highlighted_new = highlight_differences_pair(
                         preview.original_name, preview.new_name
                     )
-                    table.add_row(
-                        highlighted_orig,
-                        highlighted_new,
-                    )
+
+                    if show_quality and preview.metadata:
+                        meta = preview.metadata
+                        table.add_row(
+                            highlighted_orig,
+                            highlighted_new,
+                            f"{meta.quality_score:.0f}",
+                            f"{meta.font_revision:.2f}",
+                            format_language_support(meta.language_support),
+                            f"{len(meta.opentype_features)}",
+                        )
+                    else:
+                        table.add_row(highlighted_orig, highlighted_new)
 
             console.print(table)
     else:
-        # Fallback for non-Rich environments
         for dir_path, previews in sorted(previews_by_dir.items()):
             for preview in sorted(previews, key=lambda p: p.original_name):
                 cs.emit(f"{cs.indent(1)}{preview.original_name} -> {preview.new_name}")
@@ -971,7 +1191,7 @@ def show_directory_stats(dir_stats: RenameStats, verbose: bool) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Rename font files to PostScript names with version priority",
+        description="Rename font files to PostScript names with intelligent quality scoring",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -979,6 +1199,7 @@ Examples:
   %(prog)s font1.otf font2.otf         # Rename specific files
   %(prog)s /fonts/ -r         # Process directory recursively
   %(prog)s /fonts/ -n           # Preview changes
+  %(prog)s /fonts/ --show-quality  # Show quality scores in preview
         """,
     )
 
@@ -1013,14 +1234,17 @@ Examples:
         action="store_true",
         help="Skip preflight preview and proceed directly",
     )
+    parser.add_argument(
+        "--show-quality",
+        action="store_true",
+        help="Display quality scores and details in preview",
+    )
 
     args = parser.parse_args()
 
-    # Default to current directory if no paths given
     if not args.paths:
         args.paths = ["."]
 
-    # Collect all font files
     font_paths = collect_font_files(
         args.paths, recursive=args.recursive, allowed_extensions=FONT_EXTENSIONS
     )
@@ -1030,28 +1254,24 @@ Examples:
             cs.StatusIndicator("error").with_explanation("No font files found").emit()
         return 1
 
-    # Group by directory
     dirs_to_process = group_files_by_directory(font_paths)
 
-    # Show summary
     if console:
         mode = "DRY RUN" if args.dry_run else "RENAME"
         cs.print_panel(
             f"Mode: {mode}\n"
             f"Files: {cs.fmt_count(len(font_paths))}\n"
             f"Directories: {cs.fmt_count(len(dirs_to_process))}",
-            title="Font File Renamer",
+            title="Font File Renamer (Quality-Aware)",
             border_style="blue",
         )
 
-    # Analyze and show preview unless --no-preview
     if not args.no_preview:
         previews_by_dir = analyze_renames(font_paths, rename_all=args.rename_all)
 
         if previews_by_dir:
-            show_preflight_preview(previews_by_dir)
+            show_preflight_preview(previews_by_dir, show_quality=args.show_quality)
 
-            # Ask for confirmation unless dry-run
             if not args.dry_run:
                 if not cs.prompt_confirm(
                     "Ready to rename font files to PostScript names",
@@ -1070,7 +1290,6 @@ Examples:
                 ).emit()
             return 0
 
-    # Process each directory
     total_stats = RenameStats()
     for idx, (directory, files_in_dir) in enumerate(sorted(dirs_to_process.items()), 1):
         if console:
@@ -1093,7 +1312,6 @@ Examples:
 
         show_directory_stats(dir_stats, args.verbose)
 
-    # Final summary
     if console:
         cs.print_panel(
             f"Total files: {cs.fmt_count(total_stats.total_files)}\n"
