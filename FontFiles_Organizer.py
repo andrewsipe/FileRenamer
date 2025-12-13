@@ -44,7 +44,7 @@ if str(_project_root) not in sys.path:
 
 # Core module imports
 import FontCore.core_console_styles as cs
-from FontCore.core_file_collector import iter_font_files
+from FontCore.core_file_collector import collect_font_files_with_rich_progress
 from FontCore.core_font_sorter import (
     FontSorter,
     create_font_info_from_paths,
@@ -57,6 +57,8 @@ from FontCore.core_font_metadata import (
 from FontCore.core_font_utils import (
     is_valid_postscript_name,
     sanitize_folder_name,
+    count_items_per_group,
+    format_name_with_count,
 )
 from FontCore.core_name_policies import is_bad_vendor
 
@@ -422,29 +424,42 @@ def assign_target_paths(
     """
     Assign target paths to OrganizedFont objects based on directory structure.
     Handles duplicate filenames within the same folder.
+    Adds file count to folder names (e.g., "Helvetica (12)").
 
     Args:
         organized_fonts: List of OrganizedFont objects
         output_dir: Base output directory
         sort_mode: Sort mode ("ALPHABETICAL", "VENDOR")
     """
-    # Track filenames per folder to handle duplicates
+
+    def get_folder_key(font: OrganizedFont) -> Tuple[str, ...]:
+        """Extract folder key for grouping based on sort mode."""
+        if sort_mode == "VENDOR":
+            return (font.vendor_id or "UKWN", font.folder_name)
+        else:
+            return (font.alpha_folder, font.folder_name)
+
+    # First pass: count fonts per folder using the utility function
+    folder_counts = count_items_per_group(organized_fonts, get_folder_key)
+
+    # Second pass: assign target paths with file counts in folder names
     folder_files: Dict[Tuple[str, ...], List[str]] = defaultdict(list)
 
     for font in organized_fonts:
         # Determine top-level folder based on sort mode
+        folder_key = get_folder_key(font)
+        count = folder_counts[folder_key]
+
         if sort_mode == "VENDOR":
-            # Vendor mode: vendor_id/family_name
+            # Vendor mode: vendor_id/family_name (count)
             top_folder = font.vendor_id or "UKWN"
-            folder_name = font.folder_name
-            target_dir = output_dir / top_folder / folder_name
-            folder_key = (top_folder, folder_name)
+            folder_name_with_count = format_name_with_count(font.folder_name, count)
+            target_dir = output_dir / top_folder / folder_name_with_count
         else:
-            # Default alphabetical mode: A-Z/family_name
+            # Default alphabetical mode: A-Z/family_name (count)
             alpha_folder = font.alpha_folder
-            folder_name = font.folder_name
-            target_dir = output_dir / alpha_folder / folder_name
-            folder_key = (alpha_folder, folder_name)
+            folder_name_with_count = format_name_with_count(font.folder_name, count)
+            target_dir = output_dir / alpha_folder / folder_name_with_count
 
         # Get base filename (PostScript name)
         base_filename = font.ps_name
@@ -775,29 +790,19 @@ def organize_fonts(
     else:
         output_dir = Path(output_dir)
 
-    # Collect font files with progress callbacks
+    # Collect font files with Rich progress bar
     if console:
         cs.StatusIndicator("info").add_message(
             f"Collecting fonts from {cs.fmt_file(str(source_dir))}"
         ).emit()
 
-    def progress_callback(progress: Dict[str, int | str]) -> None:
-        """Report progress during font file collection."""
-        if console and verbose:
-            matches = progress.get("matches_found", 0)
-            files_scanned = progress.get("files_scanned", 0)
-            cs.StatusIndicator("info").add_message(
-                f"Scanning: {cs.fmt_count(matches)} fonts found "
-                f"({cs.fmt_count(files_scanned)} files scanned)"
-            ).emit()
-
-    font_paths = list(
-        iter_font_files(
-            [str(source_dir)],
-            recursive=recursive,
-            allowed_extensions=FONT_EXTENSIONS_SET,
-            on_progress=progress_callback if verbose else None,
-        )
+    # Use the centralized Rich progress bar helper
+    font_paths = collect_font_files_with_rich_progress(
+        paths=[str(source_dir)],
+        recursive=recursive,
+        allowed_extensions=FONT_EXTENSIONS_SET,
+        description="Scanning for font files...",
+        console=console,
     )
 
     if not font_paths:
