@@ -94,6 +94,10 @@ class FontMetadata:
     opentype_features: set = field(default_factory=set)
     quality_score: Optional[float] = None
 
+    # Typographic names (nameID 16 and 17)
+    typographic_family: Optional[str] = None
+    typographic_subfamily: Optional[str] = None
+
     def to_dict(self) -> dict:
         data = asdict(self)
         # Convert sets to lists for JSON serialization
@@ -435,6 +439,18 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
         version_record = font["name"].getName(5, 3, 1, 0x409)
         version_string = version_record.toUnicode() if version_record else ""
 
+        # Typographic Family (nameID 16)
+        family_record = font["name"].getName(16, 3, 1, 0x409)
+        typographic_family = (
+            family_record.toUnicode().strip() if family_record else None
+        )
+
+        # Typographic Subfamily (nameID 17)
+        subfamily_record = font["name"].getName(17, 3, 1, 0x409)
+        typographic_subfamily = (
+            subfamily_record.toUnicode().strip() if subfamily_record else None
+        )
+
         # head table data
         head_table = font.get("head")
         font_revision = head_table.fontRevision if head_table else 0.0
@@ -471,6 +487,8 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
             detected_format=detected_format,
             language_support=language_support,
             opentype_features=opentype_features,
+            typographic_family=typographic_family,
+            typographic_subfamily=typographic_subfamily,
         )
     except Exception as e:
         if console:
@@ -529,6 +547,35 @@ def is_valid_postscript_name(ps_name: str) -> Tuple[bool, str]:
     return True, ""
 
 
+def generate_typographic_filename(
+    typographic_family: Optional[str], typographic_subfamily: Optional[str]
+) -> Optional[str]:
+    """
+    Generate filename from typographic family and subfamily.
+
+    Args:
+        typographic_family: nameID 16 (Typographic Family)
+        typographic_subfamily: nameID 17 (Typographic Subfamily)
+
+    Returns:
+        Normalized filename in format "Family-Style" (spaces removed),
+        or None if either field is empty/None
+    """
+    if not typographic_family or not typographic_subfamily:
+        return None
+
+    # Remove all spaces from both fields
+    family_normalized = typographic_family.replace(" ", "")
+    subfamily_normalized = typographic_subfamily.replace(" ", "")
+
+    # Return None if normalization resulted in empty strings
+    if not family_normalized or not subfamily_normalized:
+        return None
+
+    # Combine as "Family-Style"
+    return f"{family_normalized}-{subfamily_normalized}"
+
+
 # ============================================================================
 # Quality-Based Priority Sorting
 # ============================================================================
@@ -580,17 +627,36 @@ def rename_to_temp(font_files: List[Path], dry_run: bool = False) -> Dict[Path, 
 
 def assign_final_names(
     ps_name_groups: Dict[str, List[FontMetadata]],
+    use_typographic_names: bool = False,
 ) -> Dict[Path, str]:
     """
-    Assign final names based on PostScript name and quality score.
+    Assign final names based on PostScript name or typographic names and quality score.
     Highest quality gets clean name, others get ~001, ~002, etc.
+
+    Args:
+        ps_name_groups: Fonts grouped by PostScript name and format
+        use_typographic_names: If True, use nameID 16/17 for filenames when available
     """
     rename_map: Dict[Path, str] = {}
 
     for group_key, metadata_list in ps_name_groups.items():
         # Use quality-based sorting
         sorted_fonts = sort_by_quality_score(metadata_list)
-        ps_name = sorted_fonts[0].ps_name
+
+        # Determine base name for this group
+        base_name = None
+        if use_typographic_names:
+            # Try to use typographic name from highest quality font
+            top_font = sorted_fonts[0]
+            typo_name = generate_typographic_filename(
+                top_font.typographic_family, top_font.typographic_subfamily
+            )
+            if typo_name:
+                base_name = typo_name
+
+        # Fall back to PostScript name if typographic name not available
+        if base_name is None:
+            base_name = sorted_fonts[0].ps_name
 
         for idx, meta in enumerate(sorted_fonts):
             original_path = Path(meta.file_path)
@@ -599,12 +665,25 @@ def assign_final_names(
             else:
                 ext = original_path.suffix.lower()
 
+            # Determine base name for this specific font
+            font_base_name = base_name
+            if use_typographic_names:
+                typo_name = generate_typographic_filename(
+                    meta.typographic_family, meta.typographic_subfamily
+                )
+                if typo_name:
+                    # Use typographic name for this font
+                    font_base_name = typo_name
+                else:
+                    # Fall back to this font's PostScript name
+                    font_base_name = meta.ps_name
+
             if idx == 0:
                 # Highest quality gets clean name
-                new_name = f"{ps_name}{ext}"
+                new_name = f"{font_base_name}{ext}"
             else:
                 # Lower quality gets counter suffix
-                new_name = f"{ps_name}~{idx:03d}{ext}"
+                new_name = f"{font_base_name}~{idx:03d}{ext}"
 
             rename_map[original_path] = new_name
 
@@ -895,6 +974,7 @@ def process_directory(
     rename_all: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
+    use_typographic_names: bool = False,
 ) -> RenameStats:
     """Process all font files in a single directory"""
     stats = RenameStats()
@@ -917,7 +997,9 @@ def process_directory(
     if not font_metadata:
         return stats
 
-    rename_map = assign_final_names(ps_name_groups)
+    rename_map = assign_final_names(
+        ps_name_groups, use_typographic_names=use_typographic_names
+    )
 
     rename_stats = execute_final_renames(rename_map, font_metadata, dry_run, verbose)
     stats.renamed = rename_stats.renamed
@@ -951,6 +1033,7 @@ class RenamePreview:
 def analyze_renames(
     font_paths: List[str],
     rename_all: bool = False,
+    use_typographic_names: bool = False,
 ) -> Dict[str, List[RenamePreview]]:
     """Analyze what renames would occur without actually performing them"""
     dirs_to_process = group_files_by_directory(font_paths)
@@ -998,7 +1081,9 @@ def analyze_renames(
 
         # assign_final_names calculates quality scores via sort_by_quality_score
         # Since metadata objects are shared, scores are set on the objects in font_metadata
-        rename_map = assign_final_names(ps_name_groups)
+        rename_map = assign_final_names(
+            ps_name_groups, use_typographic_names=use_typographic_names
+        )
 
         previews = []
         for original_path, new_name in rename_map.items():
@@ -1239,6 +1324,11 @@ Examples:
         action="store_true",
         help="Display quality scores and details in preview",
     )
+    parser.add_argument(
+        "--use-typographic-names",
+        action="store_true",
+        help="Use nameID 16 (Family) and 17 (Style) for filenames instead of PostScript names",
+    )
 
     args = parser.parse_args()
 
@@ -1267,7 +1357,11 @@ Examples:
         )
 
     if not args.no_preview:
-        previews_by_dir = analyze_renames(font_paths, rename_all=args.rename_all)
+        previews_by_dir = analyze_renames(
+            font_paths,
+            rename_all=args.rename_all,
+            use_typographic_names=args.use_typographic_names,
+        )
 
         if previews_by_dir:
             show_preflight_preview(previews_by_dir, show_quality=args.show_quality)
@@ -1302,6 +1396,7 @@ Examples:
             rename_all=args.rename_all,
             dry_run=args.dry_run,
             verbose=args.verbose,
+            use_typographic_names=args.use_typographic_names,
         )
 
         total_stats.total_files += dir_stats.total_files
