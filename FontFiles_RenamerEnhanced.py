@@ -827,8 +827,99 @@ def generate_typographic_filename(
 
 
 # ============================================================================
+# Path Normalization
+# ============================================================================
+
+
+def normalize_path(path: Path) -> Path:
+    """
+    Normalize path for consistent comparison and matching.
+    Uses resolve() to get absolute, canonical paths.
+    
+    Args:
+        path: Path to normalize
+    
+    Returns:
+        Normalized absolute path
+    """
+    return path.resolve()
+
+
+# ============================================================================
 # Quality-Based Priority Sorting
 # ============================================================================
+
+
+def explain_quality_comparison(
+    font_a: FontMetadata,
+    font_b: FontMetadata,
+    fonts_in_group: List[FontMetadata],
+) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Explain why one font has a higher quality score than another.
+    Returns breakdown of score differences by component.
+    
+    Args:
+        font_a: First font (should be higher quality)
+        font_b: Second font (should be lower quality)
+        fonts_in_group: All fonts in the group for context
+    
+    Returns:
+        Dictionary mapping component names to (score_a, score_b, difference) tuples
+    """
+    breakdown = {}
+
+    # Revision component
+    rev_a = (font_a.font_revision or 0.0) * WEIGHT_REVISION
+    rev_b = (font_b.font_revision or 0.0) * WEIGHT_REVISION
+    breakdown["revision"] = (rev_a, rev_b, rev_a - rev_b)
+
+    # Language component
+    lang_a = font_a._get_language_score() * WEIGHT_LANGUAGE
+    lang_b = font_b._get_language_score() * WEIGHT_LANGUAGE
+    breakdown["language"] = (lang_a, lang_b, lang_a - lang_b)
+
+    # Features component
+    feat_a = font_a._get_feature_score() * WEIGHT_FEATURES
+    feat_b = font_b._get_feature_score() * WEIGHT_FEATURES
+    breakdown["features"] = (feat_a, feat_b, feat_a - feat_b)
+
+    # Glyph component (relative to group)
+    glyph_a = 0.0
+    glyph_b = 0.0
+    if fonts_in_group and len(fonts_in_group) > 1:
+        glyph_counts = [f.glyph_count for f in fonts_in_group]
+        median_glyphs = sorted(glyph_counts)[len(glyph_counts) // 2]
+
+        if median_glyphs > 0:
+            if font_a.glyph_count >= median_glyphs * 1.10:
+                glyph_a = min(
+                    ((font_a.glyph_count / median_glyphs) - 1.0) * WEIGHT_GLYPHS,
+                    WEIGHT_GLYPHS,
+                )
+            if font_b.glyph_count >= median_glyphs * 1.10:
+                glyph_b = min(
+                    ((font_b.glyph_count / median_glyphs) - 1.0) * WEIGHT_GLYPHS,
+                    WEIGHT_GLYPHS,
+                )
+
+    breakdown["glyphs"] = (glyph_a, glyph_b, glyph_a - glyph_b)
+
+    # Recency component
+    recency_a = 0.0
+    recency_b = 0.0
+    if font_a.head_created and font_a.head_created >= MAC_EPOCH_2020:
+        recency_a = min(
+            (font_a.head_created - MAC_EPOCH_2020) / (SECONDS_PER_YEAR * RECENCY_YEARS), 1.0
+        ) * WEIGHT_RECENCY
+    if font_b.head_created and font_b.head_created >= MAC_EPOCH_2020:
+        recency_b = min(
+            (font_b.head_created - MAC_EPOCH_2020) / (SECONDS_PER_YEAR * RECENCY_YEARS), 1.0
+        ) * WEIGHT_RECENCY
+
+    breakdown["recency"] = (recency_a, recency_b, recency_a - recency_b)
+
+    return breakdown
 
 
 def sort_by_quality_score(metadata_list: List[FontMetadata]) -> List[FontMetadata]:
