@@ -40,12 +40,14 @@ from fontTools.ttLib import TTFont
 # Platform-specific file locking
 try:
     import fcntl  # Unix
+
     HAS_FCNTL = True
 except ImportError:
     HAS_FCNTL = False
 
 try:
     import msvcrt  # Windows
+
     HAS_MSVCRT = True
 except ImportError:
     HAS_MSVCRT = False
@@ -87,8 +89,12 @@ WEIGHT_RECENCY = 50  # 5% - Creation date recency
 # Magic numbers extracted to constants
 ESTIMATED_TEMP_SPACE_PER_FILE = 100 * 1024  # 100KB buffer per file for temp operations
 MAX_CONFLICT_COUNTER = 999  # Maximum number of conflict suffixes to try
-MAC_EPOCH_2020 = 3786825600.0  # Mac epoch timestamp for Jan 1, 2020 (baseline for recency scoring)
-SECONDS_PER_YEAR = 86400 * 365  # Seconds in a year (approximate, for recency calculation)
+MAC_EPOCH_2020 = (
+    3786825600.0  # Mac epoch timestamp for Jan 1, 2020 (baseline for recency scoring)
+)
+SECONDS_PER_YEAR = (
+    86400 * 365
+)  # Seconds in a year (approximate, for recency calculation)
 RECENCY_YEARS = 5  # Years from 2020 baseline for recency normalization
 
 # File locking retry configuration
@@ -104,11 +110,11 @@ LOCK_RETRY_BASE_DELAY = 0.1  # Base delay in seconds for exponential backoff
 class FontMetadata:
     """
     Enhanced metadata with quality scoring for font file renaming.
-    
+
     This class stores comprehensive metadata extracted from font files, including
     PostScript names, version information, language support, OpenType features,
     and quality scores used for prioritizing fonts with the same PostScript name.
-    
+
     Fields:
         ps_name: PostScript name (nameID 6) - used as primary filename
         font_revision: Font revision number from head table
@@ -172,35 +178,35 @@ class FontMetadata:
         """
         Calculate comprehensive quality score for prioritization.
         Higher score = better font to keep as primary.
-        
+
         Quality scoring algorithm:
         The score is a weighted sum of multiple factors:
-        
+
         1. Font Revision (40% weight): Higher revision numbers indicate newer/more
            refined versions. Multiplied by WEIGHT_REVISION (400).
-        
+
         2. Language Support (25% weight): Broader language coverage is valued.
            - Pan-European (Cyrillic + Latin-Extended): 100 points
            - Cyrillic or Greek: 50 points
            - Latin-Extended: 25 points
            - Vietnamese: 20 points
            Multiplied by WEIGHT_LANGUAGE (2.5).
-        
+
         3. OpenType Features (20% weight): More features indicate better typography.
            - Valuable features (kern, liga, etc.): 10 points each
            - Other features: 2 points each
            Capped at 200 points, multiplied by WEIGHT_FEATURES (2.0).
-        
+
         4. Glyph Count (10% weight): Fonts with significantly more glyphs (10%+ above
            median) get bonus points. Multiplied by WEIGHT_GLYPHS (100).
-        
+
         5. Creation Date Recency (5% weight): Newer fonts (created after 2020) get
            bonus based on recency. Uses Mac epoch (seconds since 1904-01-01).
            Baseline is Jan 1, 2020 (MAC_EPOCH_2020). Multiplied by WEIGHT_RECENCY (50).
-        
+
         Args:
             fonts_in_group: List of all fonts in the same group for comparison
-        
+
         Returns:
             Quality score (higher is better)
         """
@@ -260,7 +266,9 @@ class FontMetadata:
             if self.head_created >= MAC_EPOCH_2020:
                 # Scale from 2020 to 2020+RECENCY_YEARS
                 recency = min(
-                    (self.head_created - MAC_EPOCH_2020) / (SECONDS_PER_YEAR * RECENCY_YEARS), 1.0
+                    (self.head_created - MAC_EPOCH_2020)
+                    / (SECONDS_PER_YEAR * RECENCY_YEARS),
+                    1.0,
                 )
                 score += recency * WEIGHT_RECENCY
 
@@ -378,7 +386,7 @@ def _file_lock(file_path: Path, mode: str = "r"):
 
             if attempt < LOCK_RETRY_MAX_ATTEMPTS - 1:
                 # Exponential backoff
-                delay = LOCK_RETRY_BASE_DELAY * (2 ** attempt)
+                delay = LOCK_RETRY_BASE_DELAY * (2**attempt)
                 time.sleep(delay)
                 attempt += 1
             else:
@@ -408,7 +416,7 @@ def _file_lock(file_path: Path, mode: str = "r"):
 def load_cache(directory: Path) -> Dict[str, FontMetadata]:
     """
     Load metadata cache from directory with corruption recovery and file locking.
-    
+
     Cache file format:
     {
         "filename.ttf": {
@@ -552,7 +560,7 @@ def detect_font_format(font: TTFont) -> str:
 def detect_language_support_from_font(font: TTFont) -> set:
     """
     Detect language support from Unicode coverage in opened font.
-    
+
     Optimized single-pass iteration through codepoints for better performance.
     Early exit when all common languages are detected.
     """
@@ -563,7 +571,7 @@ def detect_language_support_from_font(font: TTFont) -> set:
 
         codepoints = set(cmap.keys())
         languages = set()
-        
+
         # Common languages to detect (ordered by frequency)
         # Single pass through codepoints instead of multiple any() calls
         for cp in codepoints:
@@ -588,10 +596,14 @@ def detect_language_support_from_font(font: TTFont) -> set:
             # Hebrew: U+0590-U+05FF
             elif 0x0590 <= cp <= 0x05FF:
                 languages.add("hebrew")
-            
+
             # Early exit optimization: if we've detected all common languages
             # (latin, latin-extended, cyrillic, greek), we can stop early
-            if len(languages) >= 4 and "latin" in languages and "latin-extended" in languages:
+            if (
+                len(languages) >= 4
+                and "latin" in languages
+                and "latin-extended" in languages
+            ):
                 if "cyrillic" in languages and "greek" in languages:
                     break
 
@@ -748,10 +760,10 @@ def is_valid_postscript_name(ps_name: str) -> Tuple[bool, str]:
 def validate_typographic_name(name: str) -> Tuple[bool, str]:
     """
     Validate typographic name using same rules as PostScript name validation.
-    
+
     Args:
         name: Typographic name to validate
-    
+
     Returns:
         Tuple of (is_valid, reason) where reason is empty if valid
     """
@@ -813,7 +825,7 @@ def generate_typographic_filename(
 
     # Combine as "Family-Style"
     combined_name = f"{family_normalized}-{subfamily_normalized}"
-    
+
     # Validate the combined name
     is_valid, reason = validate_typographic_name(combined_name)
     if not is_valid:
@@ -822,7 +834,7 @@ def generate_typographic_filename(
                 f"Typographic name validation failed: {reason}. Using PostScript name instead."
             ).emit()
         return None
-    
+
     return combined_name
 
 
@@ -835,10 +847,10 @@ def normalize_path(path: Path) -> Path:
     """
     Normalize path for consistent comparison and matching.
     Uses resolve() to get absolute, canonical paths.
-    
+
     Args:
         path: Path to normalize
-    
+
     Returns:
         Normalized absolute path
     """
@@ -858,12 +870,12 @@ def explain_quality_comparison(
     """
     Explain why one font has a higher quality score than another.
     Returns breakdown of score differences by component.
-    
+
     Args:
         font_a: First font (should be higher quality)
         font_b: Second font (should be lower quality)
         fonts_in_group: All fonts in the group for context
-    
+
     Returns:
         Dictionary mapping component names to (score_a, score_b, difference) tuples
     """
@@ -909,13 +921,23 @@ def explain_quality_comparison(
     recency_a = 0.0
     recency_b = 0.0
     if font_a.head_created and font_a.head_created >= MAC_EPOCH_2020:
-        recency_a = min(
-            (font_a.head_created - MAC_EPOCH_2020) / (SECONDS_PER_YEAR * RECENCY_YEARS), 1.0
-        ) * WEIGHT_RECENCY
+        recency_a = (
+            min(
+                (font_a.head_created - MAC_EPOCH_2020)
+                / (SECONDS_PER_YEAR * RECENCY_YEARS),
+                1.0,
+            )
+            * WEIGHT_RECENCY
+        )
     if font_b.head_created and font_b.head_created >= MAC_EPOCH_2020:
-        recency_b = min(
-            (font_b.head_created - MAC_EPOCH_2020) / (SECONDS_PER_YEAR * RECENCY_YEARS), 1.0
-        ) * WEIGHT_RECENCY
+        recency_b = (
+            min(
+                (font_b.head_created - MAC_EPOCH_2020)
+                / (SECONDS_PER_YEAR * RECENCY_YEARS),
+                1.0,
+            )
+            * WEIGHT_RECENCY
+        )
 
     breakdown["recency"] = (recency_a, recency_b, recency_a - recency_b)
 
@@ -1036,7 +1058,11 @@ def assign_final_names(
             rename_map[original_path] = new_name
 
     # Log typographic name usage if enabled
-    if use_typographic_names and console and (typographic_used_count > 0 or postscript_fallback_count > 0):
+    if (
+        use_typographic_names
+        and console
+        and (typographic_used_count > 0 or postscript_fallback_count > 0)
+    ):
         cs.StatusIndicator("info").add_message(
             f"Typographic names used: {typographic_used_count}, "
             f"PostScript fallback: {postscript_fallback_count}"
@@ -1045,20 +1071,18 @@ def assign_final_names(
     return rename_map
 
 
-def resolve_name_conflict(
-    base_name: str, parent_dir: Path, exclude_path: Path
-) -> str:
+def resolve_name_conflict(base_name: str, parent_dir: Path, exclude_path: Path) -> str:
     """
     Resolve naming conflicts by adding _conflict001, _conflict002, etc.
-    
+
     Args:
         base_name: Base filename to resolve
         parent_dir: Directory where file will be placed
         exclude_path: Path to exclude from conflict check (the file being renamed)
-    
+
     Returns:
         Resolved filename
-    
+
     Raises:
         NameConflictError: If too many conflicts (>MAX_CONFLICT_COUNTER) or
                           permission issues prevent resolution
@@ -1073,12 +1097,12 @@ def resolve_name_conflict(
             if not os.access(parent_dir, os.W_OK):
                 raise NameConflictError(
                     f"Cannot resolve name conflict for '{base_name}'",
-                    reason="permission denied"
+                    reason="permission denied",
                 )
         except (OSError, PermissionError) as e:
             raise NameConflictError(
                 f"Cannot resolve name conflict for '{base_name}'",
-                reason=f"directory access error: {e}"
+                reason=f"directory access error: {e}",
             )
         return base_name
 
@@ -1093,18 +1117,18 @@ def resolve_name_conflict(
                 if not os.access(parent_dir, os.W_OK):
                     raise NameConflictError(
                         f"Cannot resolve name conflict for '{base_name}'",
-                        reason="permission denied"
+                        reason="permission denied",
                     )
             except (OSError, PermissionError) as e:
                 raise NameConflictError(
                     f"Cannot resolve name conflict for '{base_name}'",
-                    reason=f"directory access error: {e}"
+                    reason=f"directory access error: {e}",
                 )
             return new_name
 
     raise NameConflictError(
         f"Cannot resolve name conflict for '{base_name}'",
-        reason=f"too many conflicts (>{MAX_CONFLICT_COUNTER})"
+        reason=f"too many conflicts (>{MAX_CONFLICT_COUNTER})",
     )
 
 
@@ -1217,14 +1241,14 @@ def cleanup_temp_files(temp_mapping: Dict[Path, Path], dry_run: bool) -> None:
     """
     Restore all temp files to their original names.
     Used for cleanup on error or cancellation.
-    
+
     Args:
         temp_mapping: Mapping of temp_path -> original_path
         dry_run: If True, no actual file operations are performed
     """
     if dry_run:
         return
-    
+
     for temp_path, original_path in temp_mapping.items():
         restore_temp_file(temp_path, original_path, dry_run)
 
@@ -1418,7 +1442,9 @@ def process_directory(
     temp_mapping: Dict[Path, Path] = {}
 
     try:
-        font_files, temp_mapping, cache = _validate_and_prepare(directory, dry_run, verbose)
+        font_files, temp_mapping, cache = _validate_and_prepare(
+            directory, dry_run, verbose
+        )
         if not font_files:
             return stats
 
@@ -1438,7 +1464,9 @@ def process_directory(
             ps_name_groups, use_typographic_names=use_typographic_names
         )
 
-        rename_stats = _execute_rename_phase(rename_map, font_metadata, dry_run, verbose)
+        rename_stats = _execute_rename_phase(
+            rename_map, font_metadata, dry_run, verbose
+        )
         stats.renamed = rename_stats.renamed
         stats.skipped += rename_stats.skipped
         stats.errors.extend(rename_stats.errors)
@@ -1486,7 +1514,7 @@ def _group_metadata_for_preview(
     """
     ps_name_groups: Dict[str, List[FontMetadata]] = {}
     path_to_original: Dict[Path, Path] = {}
-    
+
     for font_path, metadata in font_metadata.items():
         ps_name = metadata.ps_name
         if metadata.detected_format:
@@ -1498,8 +1526,10 @@ def _group_metadata_for_preview(
             ps_name_groups[group_key] = []
         ps_name_groups[group_key].append(metadata)
         # Map the file_path (as Path) back to original font_path key using normalized paths
-        path_to_original[normalize_path(Path(metadata.file_path))] = normalize_path(font_path)
-    
+        path_to_original[normalize_path(Path(metadata.file_path))] = normalize_path(
+            font_path
+        )
+
     return ps_name_groups, path_to_original
 
 
@@ -1655,11 +1685,13 @@ def format_language_support(lang_set: set) -> str:
 
 
 def show_preflight_preview(
-    previews_by_dir: Dict[str, List[RenamePreview]], show_quality: bool = False, explain_quality: bool = False
+    previews_by_dir: Dict[str, List[RenamePreview]],
+    show_quality: bool = False,
+    explain_quality: bool = False,
 ) -> None:
     """
     Display a preview of what will be renamed.
-    
+
     Args:
         previews_by_dir: Dictionary mapping directory paths to list of previews
         show_quality: If True, show quality scores and details
@@ -1719,7 +1751,9 @@ def show_preflight_preview(
                         if len(group_previews) > 1:
                             # Sort by quality score
                             sorted_group = sorted(
-                                group_previews, key=lambda p: p.quality_score or 0.0, reverse=True
+                                group_previews,
+                                key=lambda p: p.quality_score or 0.0,
+                                reverse=True,
                             )
                             if len(sorted_group) >= 2:
                                 top_font = sorted_group[0]
@@ -1730,9 +1764,11 @@ def show_preflight_preview(
                                         p.metadata for p in sorted_group if p.metadata
                                     ]
                                     breakdown = explain_quality_comparison(
-                                        top_font.metadata, second_font.metadata, all_metadata
+                                        top_font.metadata,
+                                        second_font.metadata,
+                                        all_metadata,
                                     )
-                                    
+
                                     cs.emit("")
                                     cs.StatusIndicator("info").add_message(
                                         f"Quality comparison for '{ps_name}'"
@@ -1740,8 +1776,14 @@ def show_preflight_preview(
                                     cs.emit(
                                         f"{cs.indent(1)}{top_font.new_name} wins over {second_font.new_name} because:"
                                     )
-                                    for component, (score_a, score_b, diff) in breakdown.items():
-                                        if abs(diff) > 0.1:  # Only show significant differences
+                                    for component, (
+                                        score_a,
+                                        score_b,
+                                        diff,
+                                    ) in breakdown.items():
+                                        if (
+                                            abs(diff) > 0.1
+                                        ):  # Only show significant differences
                                             sign = "+" if diff > 0 else ""
                                             cs.emit(
                                                 f"{cs.indent(2)}• {component.capitalize()}: {sign}{diff:.0f} points "
@@ -1778,40 +1820,43 @@ def recover_orphaned_temp_files(directory: Path) -> int:
     """
     Recover orphaned temp files from previous interrupted runs.
     Looks for files matching _tmp_*.{ext} pattern and attempts to restore them.
-    
+
     Args:
         directory: Directory to scan for orphaned temp files
-    
+
     Returns:
         Number of files recovered
     """
     recovered_count = 0
-    
+
     # Look for temp files
     temp_files = []
     for ext in FONT_EXTENSIONS:
         temp_files.extend(directory.glob(f"_tmp_*{ext}"))
         temp_files.extend(directory.glob(f"_tmp_*{ext.upper()}"))
-    
+
     if not temp_files:
         return 0
-    
+
     # Try to load transaction log if it exists
     transaction_path = directory / TRANSACTION_FILENAME
     temp_to_original: Dict[str, str] = {}
-    
+
     if transaction_path.exists():
         try:
             with open(transaction_path, "r", encoding="utf-8") as f:
                 transaction_data = json.load(f)
-                if isinstance(transaction_data, dict) and "temp_mapping" in transaction_data:
+                if (
+                    isinstance(transaction_data, dict)
+                    and "temp_mapping" in transaction_data
+                ):
                     temp_to_original = transaction_data["temp_mapping"]
         except Exception as e:
             if console:
                 cs.StatusIndicator("warning").with_explanation(
                     f"Could not read transaction log: {e}"
                 ).emit()
-    
+
     for temp_file in temp_files:
         original_name = temp_to_original.get(temp_file.name)
         if not original_name:
@@ -1821,7 +1866,7 @@ def recover_orphaned_temp_files(directory: Path) -> int:
                 if metadata.file_path == str(temp_file):
                     original_name = cached_name
                     break
-        
+
         if original_name:
             original_path = directory / original_name
             if not original_path.exists():
@@ -1834,20 +1879,24 @@ def recover_orphaned_temp_files(directory: Path) -> int:
                         ).emit()
                 except Exception as e:
                     if console:
-                        cs.StatusIndicator("error").add_file(temp_file.name).with_explanation(
-                            f"Failed to recover: {e}"
-                        ).emit()
+                        cs.StatusIndicator("error").add_file(
+                            temp_file.name
+                        ).with_explanation(f"Failed to recover: {e}").emit()
             else:
                 # Original exists, temp is truly orphaned - delete it
                 try:
                     temp_file.unlink()
                     if console:
-                        cs.StatusIndicator("info").add_file(temp_file.name).with_explanation(
+                        cs.StatusIndicator("info").add_file(
+                            temp_file.name
+                        ).with_explanation(
                             "Removed orphaned temp file (original exists)"
                         ).emit()
                 except Exception as e:
                     if console:
-                        cs.StatusIndicator("warning").add_file(temp_file.name).with_explanation(
+                        cs.StatusIndicator("warning").add_file(
+                            temp_file.name
+                        ).with_explanation(
                             f"Could not remove orphaned temp file: {e}"
                         ).emit()
         else:
@@ -1855,7 +1904,7 @@ def recover_orphaned_temp_files(directory: Path) -> int:
                 cs.StatusIndicator("warning").add_file(temp_file.name).with_explanation(
                     "Cannot determine original name - manual recovery needed"
                 ).emit()
-    
+
     return recovered_count
 
 
@@ -1952,7 +2001,7 @@ Examples:
                     recovered_total += recover_orphaned_temp_files(path)
             elif path.is_file():
                 recovered_total += recover_orphaned_temp_files(path.parent)
-        
+
         if console:
             cs.print_panel(
                 f"Recovered files: {cs.fmt_count(recovered_total)}",
