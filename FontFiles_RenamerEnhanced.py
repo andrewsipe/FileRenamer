@@ -1335,10 +1335,22 @@ def check_filesystem_space(directory: Path, required_bytes: int) -> bool:
 
 
 def _prepare_directory(
-    directory: Path, dry_run: bool, verbose: bool
+    directory: Path,
+    dry_run: bool,
+    verbose: bool,
+    specific_files: Optional[List[Path]] = None,
 ) -> Tuple[List[Path], Dict[Path, Path]]:
     """Prepare directory for processing: collect files, check space, rename to temp"""
-    font_files = collect_directory_fonts(directory)
+    if specific_files is not None:
+        # Use provided specific files, filtering to only those in this directory
+        # Normalize paths for consistent comparison
+        normalized_dir = normalize_path(directory)
+        font_files = [
+            f for f in specific_files if normalize_path(f.parent) == normalized_dir
+        ]
+    else:
+        # Collect all fonts in directory (backward compatible behavior)
+        font_files = collect_directory_fonts(directory)
     if not font_files:
         return [], {}
 
@@ -1403,13 +1415,18 @@ def _extract_and_group_metadata(
 
 
 def _validate_and_prepare(
-    directory: Path, dry_run: bool, verbose: bool
+    directory: Path,
+    dry_run: bool,
+    verbose: bool,
+    specific_files: Optional[List[Path]] = None,
 ) -> Tuple[List[Path], Dict[Path, Path], Dict[str, FontMetadata]]:
     """
     Validate directory and prepare for processing.
     Returns font_files, temp_mapping, and cache.
     """
-    font_files, temp_mapping = _prepare_directory(directory, dry_run, verbose)
+    font_files, temp_mapping = _prepare_directory(
+        directory, dry_run, verbose, specific_files
+    )
     cache = load_cache(directory)
     return font_files, temp_mapping, cache
 
@@ -1433,6 +1450,7 @@ def process_directory(
     dry_run: bool = False,
     verbose: bool = False,
     use_typographic_names: bool = False,
+    specific_files: Optional[List[Path]] = None,
 ) -> RenameStats:
     """
     Process all font files in a single directory.
@@ -1443,7 +1461,7 @@ def process_directory(
 
     try:
         font_files, temp_mapping, cache = _validate_and_prepare(
-            directory, dry_run, verbose
+            directory, dry_run, verbose, specific_files
         )
         if not font_files:
             return stats
@@ -2070,12 +2088,16 @@ Examples:
                 f"Directory {idx}/{len(dirs_to_process)}: {cs.fmt_file(str(directory))}"
             ).emit()
 
+        # Pass specific files to process_directory to avoid processing all fonts in directory
+        specific_files = files_in_dir if files_in_dir else None
+
         dir_stats = process_directory(
             directory,
             rename_all=args.rename_all,
             dry_run=args.dry_run,
             verbose=args.verbose,
             use_typographic_names=args.use_typographic_names,
+            specific_files=specific_files,
         )
 
         total_stats.total_files += dir_stats.total_files

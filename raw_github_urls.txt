@@ -2,7 +2,6 @@
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Byte_Comparator.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Organizer.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_OrganizerEnhanced.py
-https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Renamer.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_RenamerEnhanced.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_SHA256_Deduplicator.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Variation_Analyzer.py
