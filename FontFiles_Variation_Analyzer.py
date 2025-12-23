@@ -1378,14 +1378,11 @@ def process_file_size_only_groups(
             dedup_stats.files_moved += 1
             dedup_stats.bytes_saved += font.file_size
             if console:
-                if dry_run:
-                    cs.StatusIndicator("info", dry_run=True).add_file(
-                        font.name
-                    ).with_explanation("Would remove").emit()
-                else:
-                    cs.StatusIndicator("deleted").add_file(font.name).with_explanation(
-                        "Removed"
-                    ).emit()
+                # Use same StatusIndicator for both dry-run and normal mode
+                # DRY prefix will be added automatically when dry_run=True
+                cs.StatusIndicator("deleted", dry_run=dry_run).add_file(
+                    font.name
+                ).with_explanation("Removed" if not dry_run else "Would remove").emit()
         else:
             dedup_stats.add_error(font.name, "Failed to move to trash")
 
@@ -1456,14 +1453,11 @@ def process_multiple_differences_groups(
             dedup_stats.files_moved += 1
             dedup_stats.bytes_saved += font.file_size
             if console:
-                if dry_run:
-                    cs.StatusIndicator("info", dry_run=True).add_file(
-                        font.name
-                    ).with_explanation("Would remove").emit()
-                else:
-                    cs.StatusIndicator("deleted").add_file(font.name).with_explanation(
-                        "Removed"
-                    ).emit()
+                # Use same StatusIndicator for both dry-run and normal mode
+                # DRY prefix will be added automatically when dry_run=True
+                cs.StatusIndicator("deleted", dry_run=dry_run).add_file(
+                    font.name
+                ).with_explanation("Removed" if not dry_run else "Would remove").emit()
         else:
             dedup_stats.add_error(font.name, "Failed to move to trash")
 

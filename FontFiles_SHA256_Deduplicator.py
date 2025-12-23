@@ -658,28 +658,22 @@ def process_duplicate_file(
     Process a single duplicate file (move to trash or preview).
     Returns (success, bytes_saved)
     """
+    # Use same StatusIndicator for both dry-run and normal mode
+    # DRY prefix will be added automatically when dry_run=True
+    if console:
+        if verbose:
+            cs.StatusIndicator("deleted", dry_run=dry_run).add_file(
+                file_info.name
+            ).add_message("Removed duplicate" if not dry_run else "Would remove").emit()
+        else:
+            cs.StatusIndicator("deleted", dry_run=dry_run).add_file(
+                file_info.name
+            ).with_explanation("Removed duplicate" if not dry_run else "Would remove").emit()
+
     if dry_run:
-        if console:
-            if verbose:
-                cs.StatusIndicator("info", dry_run=True).add_file(
-                    file_info.name
-                ).with_explanation("Would remove").emit()
-            else:
-                cs.StatusIndicator("warning", dry_run=True).add_file(
-                    file_info.name
-                ).with_explanation("Would remove").emit()
         return True, file_info.size
 
     if move_to_trash(file_info.path, trash_dir, dry_run):
-        if console:
-            if verbose:
-                cs.StatusIndicator("deleted").add_file(file_info.name).add_message(
-                    "Removed duplicate"
-                ).emit()
-            else:
-                cs.StatusIndicator("deleted").add_file(file_info.name).with_explanation(
-                    "Removed duplicate"
-                ).emit()
         return True, file_info.size
 
     return False, 0
@@ -1019,7 +1013,9 @@ Keep Strategies:
 
         # Show summary
         if console:
-            mode = "DRY RUN" if args.dry_run else "CROSS-DIRECTORY COMPARE"
+            # Use same mode string for both dry-run and normal mode
+            # DRY prefix will be added automatically by StatusIndicator when dry_run=True
+            mode = "CROSS-DIRECTORY COMPARE"
             summary_lines = [
                 f"Mode: {mode}",
                 f"Primary directory: {primary_dir}",
@@ -1113,7 +1109,9 @@ Keep Strategies:
 
     # Show summary
     if console:
-        mode = "DRY RUN" if args.dry_run else "DEDUPLICATE"
+        # Use same mode string for both dry-run and normal mode
+        # DRY prefix will be added automatically by StatusIndicator when dry_run=True
+        mode = "DEDUPLICATE"
         cs.print_panel(
             f"Mode: {mode}\n"
             f"Strategy: Keep {args.keep_strategy} duplicate\n"

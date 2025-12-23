@@ -68,6 +68,10 @@ if str(_project_root) not in sys.path:
 # Core module imports
 import FontCore.core_console_styles as cs  # noqa: E402
 from FontCore.core_file_collector import collect_font_files  # noqa: E402
+from FontCore.core_variable_font_detection import (  # noqa: E402
+    is_variable_font,
+    VariableFontMode,
+)
 
 console = cs.get_console()
 
@@ -131,6 +135,7 @@ class FontMetadata:
         quality_score: Calculated quality score for prioritization (higher is better)
         typographic_family: Typographic family name (nameID 16)
         typographic_subfamily: Typographic subfamily name (nameID 17)
+        is_variable: Whether this font is a variable font (has fvar table)
     """
 
     # Original fields
@@ -154,6 +159,9 @@ class FontMetadata:
     typographic_family: Optional[str] = None
     typographic_subfamily: Optional[str] = None
 
+    # Variable font detection
+    is_variable: bool = False
+
     def to_dict(self) -> dict:
         data = asdict(self)
         # Convert sets to lists for JSON serialization
@@ -172,6 +180,9 @@ class FontMetadata:
             data["opentype_features"] = set(data["opentype_features"])
         else:
             data["opentype_features"] = set()
+        # Handle backward compatibility: is_variable may not exist in old cache files
+        if "is_variable" not in data:
+            data["is_variable"] = False
         return cls(**data)
 
     def calculate_quality_score(self, fonts_in_group: List["FontMetadata"]) -> float:
@@ -680,6 +691,9 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
         # OpenType features extraction
         opentype_features = extract_opentype_features_from_font(font)
 
+        # Variable font detection (use LENIENT mode to catch technically valid variable fonts)
+        is_variable = is_variable_font(font, mode=VariableFontMode.LENIENT)
+
         file_size = font_path.stat().st_size
 
         font.close()
@@ -699,6 +713,7 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
             opentype_features=opentype_features,
             typographic_family=typographic_family,
             typographic_subfamily=typographic_subfamily,
+            is_variable=is_variable,
         )
     except Exception as e:
         if console:
@@ -1009,6 +1024,11 @@ def assign_final_names(
         # Use quality-based sorting
         sorted_fonts = sort_by_quality_score(metadata_list)
 
+        # Separate static and variable fonts
+        static_fonts = [f for f in sorted_fonts if not f.is_variable]
+        variable_fonts = [f for f in sorted_fonts if f.is_variable]
+        has_conflict = len(static_fonts) > 0 and len(variable_fonts) > 0
+
         # Determine base name for this group
         base_name = None
         if use_typographic_names:
@@ -1027,7 +1047,8 @@ def assign_final_names(
             if use_typographic_names:
                 postscript_fallback_count += 1
 
-        for idx, meta in enumerate(sorted_fonts):
+        # Process static fonts (get clean name when conflict exists)
+        for idx, meta in enumerate(static_fonts):
             # Use normalized path for consistent mapping
             original_path = normalize_path(Path(meta.file_path))
             if meta.detected_format:
@@ -1054,6 +1075,43 @@ def assign_final_names(
             else:
                 # Lower quality gets counter suffix
                 new_name = f"{font_base_name}~{idx:03d}{ext}"
+
+            rename_map[original_path] = new_name
+
+        # Process variable fonts (add -Variable suffix when conflict exists)
+        for idx, meta in enumerate(variable_fonts):
+            # Use normalized path for consistent mapping
+            original_path = normalize_path(Path(meta.file_path))
+            if meta.detected_format:
+                ext = f".{meta.detected_format}"
+            else:
+                ext = Path(meta.file_path).suffix.lower()
+
+            # Determine base name for this specific font
+            font_base_name = base_name
+            if use_typographic_names:
+                typo_name = generate_typographic_filename(
+                    meta.typographic_family, meta.typographic_subfamily
+                )
+                if typo_name:
+                    # Use typographic name for this font
+                    font_base_name = typo_name
+                else:
+                    # Fall back to this font's PostScript name
+                    font_base_name = meta.ps_name
+
+            # Add -Variable suffix only when there's a conflict with static fonts
+            if has_conflict:
+                variable_suffix = "-Variable"
+            else:
+                variable_suffix = ""
+
+            if idx == 0:
+                # Highest quality gets clean name (with -Variable if conflict)
+                new_name = f"{font_base_name}{variable_suffix}{ext}"
+            else:
+                # Lower quality gets counter suffix (with -Variable if conflict)
+                new_name = f"{font_base_name}{variable_suffix}~{idx:03d}{ext}"
 
             rename_map[original_path] = new_name
 
@@ -1136,20 +1194,19 @@ def execute_single_rename(
     temp_path: Path, new_name: str, original_name: str, dry_run: bool, verbose: bool
 ) -> Tuple[bool, Optional[str]]:
     """Execute or preview a single rename"""
+    # Use same StatusIndicator for both dry-run and normal mode
+    # DRY prefix will be added automatically when dry_run=True
+    if console and verbose:
+        cs.StatusIndicator("updated", dry_run=dry_run).add_values(
+            old_value=original_name, new_value=new_name
+        ).emit()
+
     if dry_run:
-        if console and verbose:
-            cs.StatusIndicator("info", dry_run=True).add_values(
-                old_value=original_name, new_value=new_name
-            ).emit()
         return True, None
 
     try:
         target_path = temp_path.parent / new_name
         temp_path.rename(target_path)
-        if console and verbose:
-            cs.StatusIndicator("updated").add_values(
-                old_value=original_name, new_value=new_name
-            ).emit()
         return True, None
     except Exception as e:
         if console:
@@ -2040,7 +2097,9 @@ Examples:
     dirs_to_process = group_files_by_directory(font_paths)
 
     if console:
-        mode = "DRY RUN" if args.dry_run else "RENAME"
+        # Use same mode string for both dry-run and normal mode
+        # DRY prefix will be added automatically by StatusIndicator when dry_run=True
+        mode = "RENAME"
         cs.print_panel(
             f"Mode: {mode}\n"
             f"Files: {cs.fmt_count(len(font_paths))}\n"

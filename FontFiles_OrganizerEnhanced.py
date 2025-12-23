@@ -835,72 +835,67 @@ def move_files_to_structure(
                 stats.add_error(font.original_filename, f"Cannot create directory: {e}")
                 continue
 
-        # Move file
+        # Use same StatusIndicator for both dry-run and normal mode
+        # DRY prefix will be added automatically when dry_run=True
+        if console and verbose:
+            cs.StatusIndicator("updated", dry_run=dry_run).add_file(
+                font.original_filename
+            ).add_message(
+                f"→ {cs.fmt_file(str(font.target_path.relative_to(output_dir)))}"
+            ).emit()
+
         if dry_run:
-            if console and verbose:
-                cs.StatusIndicator("info", dry_run=True).add_file(
-                    font.original_filename
-                ).add_message(
-                    f"→ {cs.fmt_file(str(font.target_path.relative_to(output_dir)))}"
-                ).emit()
             stats.organized += 1
-        else:
-            try:
-                # Check if source exists
+            continue
+
+        try:
+            # Check if source exists
+            if not font.source_path.exists():
+                stats.add_error(
+                    font.original_filename, "Source file does not exist"
+                )
+                continue
+
+            # Check if target already exists - handle duplicates with ~001, ~002 suffixes
+            if font.target_path.exists():
+                # Check if source still exists
                 if not font.source_path.exists():
+                    # Source doesn't exist - file was already moved, skip
+                    stats.skipped += 1
+                    continue
+
+                # Source exists but target exists - this is a duplicate
+                # Find next available name with ~001, ~002, etc. suffix
+                stem = font.target_path.stem
+                ext = font.target_path.suffix
+                counter = 1
+                duplicate_target = None
+
+                while counter < 1000:
+                    duplicate_name = f"{stem}~{counter:03d}{ext}"
+                    duplicate_target = font.target_path.parent / duplicate_name
+                    if not duplicate_target.exists():
+                        break
+                    counter += 1
+
+                if duplicate_target and counter < 1000:
+                    # Use the duplicate target path
+                    font.target_path = duplicate_target
+                else:
                     stats.add_error(
-                        font.original_filename, "Source file does not exist"
+                        font.original_filename, "Too many duplicates, cannot move"
                     )
                     continue
 
-                # Check if target already exists - handle duplicates with ~001, ~002 suffixes
-                if font.target_path.exists():
-                    # Check if source still exists
-                    if not font.source_path.exists():
-                        # Source doesn't exist - file was already moved, skip
-                        stats.skipped += 1
-                        continue
-
-                    # Source exists but target exists - this is a duplicate
-                    # Find next available name with ~001, ~002, etc. suffix
-                    stem = font.target_path.stem
-                    ext = font.target_path.suffix
-                    counter = 1
-                    duplicate_target = None
-
-                    while counter < 1000:
-                        duplicate_name = f"{stem}~{counter:03d}{ext}"
-                        duplicate_target = font.target_path.parent / duplicate_name
-                        if not duplicate_target.exists():
-                            break
-                        counter += 1
-
-                    if duplicate_target and counter < 1000:
-                        # Use the duplicate target path
-                        font.target_path = duplicate_target
-                    else:
-                        stats.add_error(
-                            font.original_filename, "Too many duplicates, cannot move"
-                        )
-                        continue
-
-                # Move file (atomic)
-                atomic_move_file(font.source_path, font.target_path)
-
-                if console and verbose:
-                    cs.StatusIndicator("updated").add_file(
-                        font.original_filename
-                    ).add_message(
-                        f"→ {cs.fmt_file(str(font.target_path.relative_to(output_dir)))}"
-                    ).emit()
-
-                stats.organized += 1
-            except PermissionError as e:
-                stats.add_error(font.original_filename, f"Permission denied: {e}")
-            except OSError as e:
-                stats.add_error(font.original_filename, f"OS error: {e}")
-            except Exception as e:
-                stats.add_error(font.original_filename, f"Unexpected error: {e}")
+            # Move file (atomic)
+            atomic_move_file(font.source_path, font.target_path)
+            stats.organized += 1
+        except PermissionError as e:
+            stats.add_error(font.original_filename, f"Permission denied: {e}")
+        except OSError as e:
+            stats.add_error(font.original_filename, f"OS error: {e}")
+        except Exception as e:
+            stats.add_error(font.original_filename, f"Unexpected error: {e}")
 
     return stats
 
@@ -1331,7 +1326,9 @@ TIPS:
 
     # Show summary
     if console:
-        mode = "DRY RUN" if args.dry_run else "ORGANIZE"
+        # Use same mode string for both dry-run and normal mode
+        # DRY prefix will be added automatically by StatusIndicator when dry_run=True
+        mode = "ORGANIZE"
         mode_info = f"Mode: {mode}\n"
         mode_info += f"Sort: {sort_mode}\n"
         if filename_terms:

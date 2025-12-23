@@ -781,8 +781,10 @@ def main():
 
         # Show what will be removed
         if console:
+            # Use same panel text for both dry-run and normal mode
+            # DRY prefix will be added automatically by StatusIndicator when dry_run=True
             cs.print_panel(
-                f"{'DRY RUN: ' if args.dry_run else ''}Deduplication Preview",
+                "Deduplication Preview",
                 title="Deduplication",
                 border_style="yellow",
             )
@@ -814,18 +816,17 @@ def main():
         failed_count = 0
 
         for file_path, report in files_to_remove:
+            # Use same StatusIndicator for both dry-run and normal mode
+            # DRY prefix will be added automatically when dry_run=True
+            if console:
+                cs.StatusIndicator("deleted", dry_run=args.dry_run).add_file(
+                    file_path.name
+                ).with_explanation("Removed" if not args.dry_run else "Would remove").emit()
+
             if args.dry_run:
-                if console:
-                    cs.StatusIndicator("info", dry_run=True).add_file(
-                        file_path.name
-                    ).with_explanation("Would remove").emit()
                 removed_count += 1
             else:
                 if move_to_trash(file_path, args.trash_dir):
-                    if console:
-                        cs.StatusIndicator("deleted").add_file(
-                            file_path.name
-                        ).with_explanation("Removed").emit()
                     removed_count += 1
                 else:
                     failed_count += 1
