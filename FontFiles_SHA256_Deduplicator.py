@@ -66,6 +66,7 @@ if str(_project_root) not in sys.path:
 
 import FontCore.core_console_styles as cs
 from FontCore.core_file_collector import collect_font_files
+from FontCore.core_font_extension import validate_and_fix_extension
 
 console = cs.get_console()
 
@@ -1004,6 +1005,39 @@ Keep Strategies:
             description="Scanning directories...",
         )
 
+        # Validate and fix extensions for both directories
+        validated_primary = []
+        for path_str in primary_files:
+            path = Path(path_str)
+            is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
+            if fixed_path:
+                if console:
+                    cs.StatusIndicator("info").add_file(
+                        str(fixed_path)
+                    ).with_explanation(
+                        f"Fixed extension: {path.name} → {fixed_path.name}"
+                    ).emit()
+                validated_primary.append(str(fixed_path))
+            else:
+                validated_primary.append(path_str)
+        primary_files = validated_primary
+
+        validated_secondary = []
+        for path_str in secondary_files:
+            path = Path(path_str)
+            is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
+            if fixed_path:
+                if console:
+                    cs.StatusIndicator("info").add_file(
+                        str(fixed_path)
+                    ).with_explanation(
+                        f"Fixed extension: {path.name} → {fixed_path.name}"
+                    ).emit()
+                validated_secondary.append(str(fixed_path))
+            else:
+                validated_secondary.append(path_str)
+        secondary_files = validated_secondary
+
         if not primary_files and not secondary_files:
             if console:
                 cs.StatusIndicator("error").with_explanation(
@@ -1098,6 +1132,23 @@ Keep Strategies:
     font_paths = collect_font_files(
         args.paths, recursive=args.recursive, allowed_extensions=FONT_EXTENSIONS
     )
+
+    # Validate and fix extensions
+    validated_paths = []
+    for path_str in font_paths:
+        path = Path(path_str)
+        is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
+        if fixed_path:
+            if console:
+                cs.StatusIndicator("info").add_file(
+                    str(fixed_path)
+                ).with_explanation(
+                    f"Fixed extension: {path.name} → {fixed_path.name}"
+                ).emit()
+            validated_paths.append(str(fixed_path))
+        else:
+            validated_paths.append(path_str)
+    font_paths = validated_paths
 
     if not font_paths:
         if console:

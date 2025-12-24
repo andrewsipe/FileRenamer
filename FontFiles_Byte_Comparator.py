@@ -47,6 +47,7 @@ if str(_project_root) not in sys.path:
 
 import FontCore.core_console_styles as cs
 from FontCore.core_file_collector import collect_font_files
+from FontCore.core_font_extension import validate_and_fix_extension
 
 console = cs.get_console()
 
@@ -548,6 +549,23 @@ def scan_directory_for_near_duplicates(
         [str(directory)], recursive=recursive, allowed_extensions=FONT_EXTENSIONS
     )
 
+    # Validate and fix extensions
+    validated_paths = []
+    for path_str in font_paths:
+        path = Path(path_str)
+        is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
+        if fixed_path:
+            if console:
+                cs.StatusIndicator("info").add_file(
+                    str(fixed_path)
+                ).with_explanation(
+                    f"Fixed extension: {path.name} → {fixed_path.name}"
+                ).emit()
+            validated_paths.append(str(fixed_path))
+        else:
+            validated_paths.append(path_str)
+    font_paths = validated_paths
+
     if not font_paths:
         if console:
             cs.StatusIndicator("error").with_explanation("No font files found").emit()
@@ -713,6 +731,7 @@ def main():
         )
     elif len(paths) >= 2:
         # Direct comparison mode - validate all are files
+        validated_paths = []
         for f in paths:
             if not f.exists():
                 if console:
@@ -726,6 +745,22 @@ def main():
                         f"Not a file: {f} (mix of files and directories not supported)"
                     ).emit()
                 return 1
+
+        # Validate and fix extensions
+        validated_paths = []
+        for f in paths:
+            is_valid, fixed_path = validate_and_fix_extension(f, auto_fix=True)
+            if fixed_path:
+                if console:
+                    cs.StatusIndicator("info").add_file(
+                        str(fixed_path)
+                    ).with_explanation(
+                        f"Fixed extension: {f.name} → {fixed_path.name}"
+                    ).emit()
+                validated_paths.append(fixed_path)
+            else:
+                validated_paths.append(f)
+        paths = validated_paths
 
         # Compare first file with each other
         for other_file in paths[1:]:
