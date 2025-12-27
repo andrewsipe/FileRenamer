@@ -472,7 +472,7 @@ def load_cache(directory: Path) -> Dict[str, FontMetadata]:
                 cache[filename] = FontMetadata.from_dict(meta)
             except Exception as e:
                 if console:
-                    cs.StatusIndicator("warning").add_file(filename).with_explanation(
+                    cs.StatusIndicator("warning").add_file(filename, filename_only=True).with_explanation(
                         f"Invalid cache entry: {e}"
                     ).emit()
                 continue
@@ -718,7 +718,7 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
         )
     except Exception as e:
         if console:
-            cs.StatusIndicator("error").add_file(font_path.name).with_explanation(
+            cs.StatusIndicator("error").add_file(font_path.name, filename_only=True).with_explanation(
                 f"Failed to read: {e}"
             ).emit()
         return None
@@ -998,7 +998,7 @@ def rename_to_temp(font_files: List[Path], dry_run: bool = False) -> Dict[Path, 
             except Exception as e:
                 if console:
                     cs.StatusIndicator("error").add_file(
-                        font_path.name
+                        font_path.name, filename_only=True
                     ).with_explanation(f"Failed temp rename: {e}").emit()
 
     return temp_mapping
@@ -1211,7 +1211,7 @@ def execute_single_rename(
         return True, None
     except Exception as e:
         if console:
-            cs.StatusIndicator("error").add_file(original_name).with_explanation(
+            cs.StatusIndicator("error").add_file(original_name, filename_only=True).with_explanation(
                 f"Failed to rename: {e}"
             ).emit()
         return False, str(e)
@@ -1245,7 +1245,7 @@ def execute_final_renames(
         except NameConflictError as e:
             stats.add_error(original_name, e.reason)
             if console:
-                cs.StatusIndicator("error").add_file(original_name).with_explanation(
+                cs.StatusIndicator("error").add_file(original_name, filename_only=True).with_explanation(
                     f"Name conflict resolution failed: {e.reason}"
                 ).emit()
             continue
@@ -1279,19 +1279,19 @@ def restore_temp_file(temp_path: Path, original_path: Path, dry_run: bool) -> No
         except PermissionError as e:
             if console:
                 cs.StatusIndicator("warning").add_file(
-                    original_path.name
+                    original_path.name, filename_only=True
                 ).with_explanation(
                     f"Cannot restore temp file (permission denied): {e}"
                 ).emit()
         except OSError as e:
             if console:
                 cs.StatusIndicator("warning").add_file(
-                    original_path.name
+                    original_path.name, filename_only=True
                 ).with_explanation(f"Cannot restore temp file: {e}").emit()
         except Exception as e:
             if console:
                 cs.StatusIndicator("warning").add_file(
-                    original_path.name
+                    original_path.name, filename_only=True
                 ).with_explanation(f"Unexpected error restoring temp file: {e}").emit()
 
 
@@ -1343,7 +1343,7 @@ def process_single_font_metadata(
 
     if metadata is None:
         if console:
-            cs.StatusIndicator("warning").add_file(original_name).with_explanation(
+            cs.StatusIndicator("warning").add_file(original_name, filename_only=True).with_explanation(
                 "Skipping invalid font"
             ).emit()
         restore_temp_file(temp_path, original_path, dry_run)
@@ -1355,7 +1355,7 @@ def process_single_font_metadata(
     is_valid, reason = is_valid_postscript_name(metadata.ps_name)
     if not is_valid and not rename_all:
         if console and verbose:
-            cs.StatusIndicator("warning").add_file(original_name).with_explanation(
+            cs.StatusIndicator("warning").add_file(original_name, filename_only=True).with_explanation(
                 f"Skipping: {reason}"
             ).emit()
         restore_temp_file(temp_path, original_path, dry_run)
@@ -1414,7 +1414,7 @@ def _prepare_directory(
 
     if console and verbose:
         cs.StatusIndicator("info").add_message(
-            f"Processing {cs.fmt_count(len(font_files))} files in {cs.fmt_file(str(directory))}"
+            f"Processing {cs.fmt_count(len(font_files))} files in {cs.fmt_file_compact(str(directory))}"
         ).emit()
 
     if not dry_run:
@@ -1956,7 +1956,7 @@ def recover_orphaned_temp_files(directory: Path) -> int:
                 except Exception as e:
                     if console:
                         cs.StatusIndicator("error").add_file(
-                            temp_file.name
+                            temp_file.name, filename_only=True
                         ).with_explanation(f"Failed to recover: {e}").emit()
             else:
                 # Original exists, temp is truly orphaned - delete it
@@ -1964,20 +1964,20 @@ def recover_orphaned_temp_files(directory: Path) -> int:
                     temp_file.unlink()
                     if console:
                         cs.StatusIndicator("info").add_file(
-                            temp_file.name
+                            temp_file.name, filename_only=True
                         ).with_explanation(
                             "Removed orphaned temp file (original exists)"
                         ).emit()
                 except Exception as e:
                     if console:
                         cs.StatusIndicator("warning").add_file(
-                            temp_file.name
+                            temp_file.name, filename_only=True
                         ).with_explanation(
                             f"Could not remove orphaned temp file: {e}"
                         ).emit()
         else:
             if console:
-                cs.StatusIndicator("warning").add_file(temp_file.name).with_explanation(
+                cs.StatusIndicator("warning").add_file(temp_file.name, filename_only=True).with_explanation(
                     "Cannot determine original name - manual recovery needed"
                 ).emit()
 
@@ -2097,10 +2097,20 @@ Examples:
         is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
         if fixed_path:
             if console:
+                # INFO: Show filename with "Fixed extension" message
                 cs.StatusIndicator("info").add_file(
-                    str(fixed_path)
-                ).with_explanation(
-                    f"Fixed extension: {path.name} → {fixed_path.name}"
+                    str(path), filename_only=True
+                ).with_explanation("Fixed extension").emit()
+                
+                # UPDATED: Show old → new with proper colors
+                cs.StatusIndicator("updated").add_values(
+                    old_value=path.name,
+                    new_value=fixed_path.name
+                ).emit()
+                
+                # SAVED: Show new filename
+                cs.StatusIndicator("saved").add_file(
+                    str(fixed_path), filename_only=True
                 ).emit()
             validated_paths.append(str(fixed_path))
         else:
@@ -2162,7 +2172,7 @@ Examples:
     for idx, (directory, files_in_dir) in enumerate(sorted(dirs_to_process.items()), 1):
         if console:
             cs.StatusIndicator("info").add_message(
-                f"Directory {idx}/{len(dirs_to_process)}: {cs.fmt_file(str(directory))}"
+                f"Directory {idx}/{len(dirs_to_process)}: {cs.fmt_file_compact(str(directory))}"
             ).emit()
 
         # Pass specific files to process_directory to avoid processing all fonts in directory
