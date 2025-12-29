@@ -472,9 +472,9 @@ def load_cache(directory: Path) -> Dict[str, FontMetadata]:
                 cache[filename] = FontMetadata.from_dict(meta)
             except Exception as e:
                 if console:
-                    cs.StatusIndicator("warning").add_file(filename, filename_only=True).with_explanation(
-                        f"Invalid cache entry: {e}"
-                    ).emit()
+                    cs.StatusIndicator("warning").add_file(
+                        filename, filename_only=True
+                    ).with_explanation(f"Invalid cache entry: {e}").emit()
                 continue
 
         return cache
@@ -718,9 +718,9 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
         )
     except Exception as e:
         if console:
-            cs.StatusIndicator("error").add_file(font_path.name, filename_only=True).with_explanation(
-                f"Failed to read: {e}"
-            ).emit()
+            cs.StatusIndicator("error").add_file(
+                font_path.name, filename_only=True
+            ).with_explanation(f"Failed to read: {e}").emit()
         return None
 
 
@@ -1211,9 +1211,9 @@ def execute_single_rename(
         return True, None
     except Exception as e:
         if console:
-            cs.StatusIndicator("error").add_file(original_name, filename_only=True).with_explanation(
-                f"Failed to rename: {e}"
-            ).emit()
+            cs.StatusIndicator("error").add_file(
+                original_name, filename_only=True
+            ).with_explanation(f"Failed to rename: {e}").emit()
         return False, str(e)
 
 
@@ -1245,7 +1245,9 @@ def execute_final_renames(
         except NameConflictError as e:
             stats.add_error(original_name, e.reason)
             if console:
-                cs.StatusIndicator("error").add_file(original_name, filename_only=True).with_explanation(
+                cs.StatusIndicator("error").add_file(
+                    original_name, filename_only=True
+                ).with_explanation(
                     f"Name conflict resolution failed: {e.reason}"
                 ).emit()
             continue
@@ -1343,9 +1345,9 @@ def process_single_font_metadata(
 
     if metadata is None:
         if console:
-            cs.StatusIndicator("warning").add_file(original_name, filename_only=True).with_explanation(
-                "Skipping invalid font"
-            ).emit()
+            cs.StatusIndicator("warning").add_file(
+                original_name, filename_only=True
+            ).with_explanation("Skipping invalid font").emit()
         restore_temp_file(temp_path, original_path, dry_run)
         return None
 
@@ -1355,9 +1357,9 @@ def process_single_font_metadata(
     is_valid, reason = is_valid_postscript_name(metadata.ps_name)
     if not is_valid and not rename_all:
         if console and verbose:
-            cs.StatusIndicator("warning").add_file(original_name, filename_only=True).with_explanation(
-                f"Skipping: {reason}"
-            ).emit()
+            cs.StatusIndicator("warning").add_file(
+                original_name, filename_only=True
+            ).with_explanation(f"Skipping: {reason}").emit()
         restore_temp_file(temp_path, original_path, dry_run)
         return None
 
@@ -1977,7 +1979,9 @@ def recover_orphaned_temp_files(directory: Path) -> int:
                         ).emit()
         else:
             if console:
-                cs.StatusIndicator("warning").add_file(temp_file.name, filename_only=True).with_explanation(
+                cs.StatusIndicator("warning").add_file(
+                    temp_file.name, filename_only=True
+                ).with_explanation(
                     "Cannot determine original name - manual recovery needed"
                 ).emit()
 
@@ -2101,13 +2105,12 @@ Examples:
                 cs.StatusIndicator("info").add_file(
                     str(path), filename_only=True
                 ).with_explanation("Fixed extension").emit()
-                
+
                 # UPDATED: Show old → new with proper colors
                 cs.StatusIndicator("updated").add_values(
-                    old_value=path.name,
-                    new_value=fixed_path.name
+                    old_value=path.name, new_value=fixed_path.name
                 ).emit()
-                
+
                 # SAVED: Show new filename
                 cs.StatusIndicator("saved").add_file(
                     str(fixed_path), filename_only=True

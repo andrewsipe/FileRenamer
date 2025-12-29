@@ -851,9 +851,7 @@ def move_files_to_structure(
         try:
             # Check if source exists
             if not font.source_path.exists():
-                stats.add_error(
-                    font.original_filename, "Source file does not exist"
-                )
+                stats.add_error(font.original_filename, "Source file does not exist")
                 continue
 
             # Check if target already exists - handle duplicates with ~001, ~002 suffixes

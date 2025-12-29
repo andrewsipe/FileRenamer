@@ -556,9 +556,7 @@ def scan_directory_for_near_duplicates(
         is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
         if fixed_path:
             if console:
-                cs.StatusIndicator("info").add_file(
-                    str(fixed_path)
-                ).with_explanation(
+                cs.StatusIndicator("info").add_file(str(fixed_path)).with_explanation(
                     f"Fixed extension: {path.name} → {fixed_path.name}"
                 ).emit()
             validated_paths.append(str(fixed_path))
@@ -856,7 +854,9 @@ def main():
             if console:
                 cs.StatusIndicator("deleted", dry_run=args.dry_run).add_file(
                     file_path.name
-                ).with_explanation("Removed" if not args.dry_run else "Would remove").emit()
+                ).with_explanation(
+                    "Removed" if not args.dry_run else "Would remove"
+                ).emit()
 
             if args.dry_run:
                 removed_count += 1

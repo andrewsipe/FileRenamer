@@ -1811,9 +1811,7 @@ def main():
         is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
         if fixed_path:
             if console:
-                cs.StatusIndicator("info").add_file(
-                    str(fixed_path)
-                ).with_explanation(
+                cs.StatusIndicator("info").add_file(str(fixed_path)).with_explanation(
                     f"Fixed extension: {path.name} → {fixed_path.name}"
                 ).emit()
             validated_paths.append(str(fixed_path))
