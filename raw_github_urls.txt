@@ -1,4 +1,7 @@
 # Root directory
+https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/.gitmodules
+https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/.metrics_checkpoint.json
+https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontCore
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Byte_Comparator.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Organizer.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_OrganizerEnhanced.py
