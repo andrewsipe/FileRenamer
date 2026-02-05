@@ -68,7 +68,10 @@ if str(_project_root) not in sys.path:
 # Core module imports
 import FontCore.core_console_styles as cs  # noqa: E402
 from FontCore.core_file_collector import collect_font_files  # noqa: E402
-from FontCore.core_font_extension import validate_and_fix_extension  # noqa: E402
+from FontCore.core_font_extension import (  # noqa: E402
+    detect_font_format as detect_font_format_from_file,
+    validate_and_fix_extension,
+)
 from FontCore.core_variable_font_detection import (  # noqa: E402
     is_variable_font,
     VariableFontMode,
@@ -549,26 +552,6 @@ def cleanup_cache(directory: Path) -> None:
 # ============================================================================
 
 
-def detect_font_format(font: TTFont) -> str:
-    """Detect font format from the font file data"""
-    try:
-        sfnt_version = font.reader.sfntVersion
-        if sfnt_version == b"wOFF":
-            return "woff"
-        elif sfnt_version == b"wOF2":
-            return "woff2"
-        elif sfnt_version == b"OTTO":
-            return "otf"
-        elif sfnt_version == b"\x00\x01\x00\x00" or sfnt_version == b"true":
-            return "ttf"
-        else:
-            if "CFF " in font:
-                return "otf"
-            return "ttf"
-    except Exception:
-        return "ttf"
-
-
 def detect_language_support_from_font(font: TTFont) -> set:
     """
     Detect language support from Unicode coverage in opened font.
@@ -683,8 +666,13 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
         maxp_table = font.get("maxp")
         glyph_count = maxp_table.numGlyphs if maxp_table else 0
 
-        # Detect font format from file data
-        detected_format = detect_font_format(font)
+        # Detect font format from file magic bytes (preserves WOFF/WOFF2; TTFont
+        # reader exposes inner SFNT version and would misreport container format)
+        actual_format = detect_font_format_from_file(font_path)
+        if actual_format in ("UNKNOWN", "ERROR"):
+            detected_format = font_path.suffix.lower().lstrip(".") or "ttf"
+        else:
+            detected_format = actual_format.lower()
 
         # Language support detection
         language_support = detect_language_support_from_font(font)
@@ -1048,73 +1036,49 @@ def assign_final_names(
             if use_typographic_names:
                 postscript_fallback_count += 1
 
-        # Process static fonts (get clean name when conflict exists)
-        for idx, meta in enumerate(static_fonts):
-            # Use normalized path for consistent mapping
-            original_path = normalize_path(Path(meta.file_path))
-            if meta.detected_format:
-                ext = f".{meta.detected_format}"
-            else:
-                ext = Path(meta.file_path).suffix.lower()
-
-            # Determine base name for this specific font
-            font_base_name = base_name
+        # When use_typographic_names is True, fonts are grouped by PostScript name
+        # (e.g. blank ID6 puts all in one group). Add ~### only for actual duplicates
+        # of the same target base name; otherwise every font after the first got a counter.
+        def _effective_base_name(meta: FontMetadata, default: str) -> str:
             if use_typographic_names:
                 typo_name = generate_typographic_filename(
                     meta.typographic_family, meta.typographic_subfamily
                 )
-                if typo_name:
-                    # Use typographic name for this font
-                    font_base_name = typo_name
-                else:
-                    # Fall back to this font's PostScript name
-                    font_base_name = meta.ps_name
+                return typo_name if typo_name else meta.ps_name
+            return default
 
-            if idx == 0:
-                # Highest quality gets clean name
-                new_name = f"{font_base_name}{ext}"
-            else:
-                # Lower quality gets counter suffix
-                new_name = f"{font_base_name}~{idx:03d}{ext}"
+        def _assign_names(
+            fonts: List[FontMetadata],
+            variable_suffix: str,
+        ) -> None:
+            # Subgroup by effective target base name so ~### is only used for real duplicates
+            subgroups: Dict[str, List[FontMetadata]] = {}
+            for meta in fonts:
+                font_base = _effective_base_name(meta, base_name)
+                key = f"{font_base}{variable_suffix}"
+                if key not in subgroups:
+                    subgroups[key] = []
+                subgroups[key].append(meta)
+            for _key, sublist in subgroups.items():
+                for idx, meta in enumerate(sublist):
+                    original_path = normalize_path(Path(meta.file_path))
+                    if meta.detected_format:
+                        ext = f".{meta.detected_format}"
+                    else:
+                        ext = Path(meta.file_path).suffix.lower()
+                    font_base_name = _effective_base_name(meta, base_name)
+                    if idx == 0:
+                        new_name = f"{font_base_name}{variable_suffix}{ext}"
+                    else:
+                        new_name = f"{font_base_name}{variable_suffix}~{idx:03d}{ext}"
+                    rename_map[original_path] = new_name
 
-            rename_map[original_path] = new_name
+        # Process static fonts (get clean name; ~### only when same typographic name)
+        _assign_names(static_fonts, "")
 
-        # Process variable fonts (add -Variable suffix when conflict exists)
-        for idx, meta in enumerate(variable_fonts):
-            # Use normalized path for consistent mapping
-            original_path = normalize_path(Path(meta.file_path))
-            if meta.detected_format:
-                ext = f".{meta.detected_format}"
-            else:
-                ext = Path(meta.file_path).suffix.lower()
-
-            # Determine base name for this specific font
-            font_base_name = base_name
-            if use_typographic_names:
-                typo_name = generate_typographic_filename(
-                    meta.typographic_family, meta.typographic_subfamily
-                )
-                if typo_name:
-                    # Use typographic name for this font
-                    font_base_name = typo_name
-                else:
-                    # Fall back to this font's PostScript name
-                    font_base_name = meta.ps_name
-
-            # Add -Variable suffix only when there's a conflict with static fonts
-            if has_conflict:
-                variable_suffix = "-Variable"
-            else:
-                variable_suffix = ""
-
-            if idx == 0:
-                # Highest quality gets clean name (with -Variable if conflict)
-                new_name = f"{font_base_name}{variable_suffix}{ext}"
-            else:
-                # Lower quality gets counter suffix (with -Variable if conflict)
-                new_name = f"{font_base_name}{variable_suffix}~{idx:03d}{ext}"
-
-            rename_map[original_path] = new_name
+        # Process variable fonts (-Variable when conflict with static; ~### only for duplicates)
+        var_suffix = "-Variable" if has_conflict else ""
+        _assign_names(variable_fonts, var_suffix)
 
     # Log typographic name usage if enabled
     if (
