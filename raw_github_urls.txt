@@ -9,6 +9,7 @@ https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_RenamerE
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_SHA256_Deduplicator.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Variation_Analyzer.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/README.md
+https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/REVIEW_OPTIONS_PRO_CON.md
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/pyproject.toml
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/requirements.txt
 
