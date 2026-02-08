@@ -30,6 +30,7 @@ import shutil
 import uuid
 import argparse
 import time
+from multiprocessing import Pool, cpu_count, current_process
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict, field
@@ -96,7 +97,9 @@ WEIGHT_RECENCY = 50  # 5% - Creation date recency
 
 # Magic numbers extracted to constants
 ESTIMATED_TEMP_SPACE_PER_FILE = 100 * 1024  # 100KB buffer per file for temp operations
-MAX_CONFLICT_COUNTER = 999  # Maximum number of conflict suffixes to try
+# Maximum conflict suffixes for resolve_name_conflict (_conflict001, ...).
+# 999 allows up to 999 alternate filenames per base before raising NameConflictError.
+MAX_CONFLICT_COUNTER = 999
 MAC_EPOCH_2020 = (
     3786825600.0  # Mac epoch timestamp for Jan 1, 2020 (baseline for recency scoring)
 )
@@ -108,6 +111,13 @@ RECENCY_YEARS = 5  # Years from 2020 baseline for recency normalization
 # File locking retry configuration
 LOCK_RETRY_MAX_ATTEMPTS = 5  # Maximum retry attempts for file lock acquisition
 LOCK_RETRY_BASE_DELAY = 0.1  # Base delay in seconds for exponential backoff
+
+# Cache validation: allow 1 second tolerance for filesystem mtime comparison
+CACHE_MTIME_TOLERANCE_SEC = 1.0
+
+# Parallel metadata extraction: use multiprocessing when uncached file count >= threshold
+PARALLEL_EXTRACT_THRESHOLD = 30
+PARALLEL_MAX_WORKERS_DEFAULT = max(1, (cpu_count() or 2) - 1)
 
 # ============================================================================
 # Data Classes
@@ -140,6 +150,7 @@ class FontMetadata:
         typographic_family: Typographic family name (nameID 16)
         typographic_subfamily: Typographic subfamily name (nameID 17)
         is_variable: Whether this font is a variable font (has fvar table)
+        file_mtime: Filesystem mtime when cached (for cache invalidation; optional)
     """
 
     # Original fields
@@ -153,6 +164,9 @@ class FontMetadata:
     file_path: str
     original_filename: Optional[str] = None
     detected_format: Optional[str] = None
+
+    # Cache validation: filesystem mtime when entry was cached (None = legacy cache)
+    file_mtime: Optional[float] = None
 
     # New quality indicators
     language_support: set = field(default_factory=set)
@@ -187,6 +201,9 @@ class FontMetadata:
         # Handle backward compatibility: is_variable may not exist in old cache files
         if "is_variable" not in data:
             data["is_variable"] = False
+        # file_mtime may not exist in old cache files (then we validate by size only)
+        if "file_mtime" not in data:
+            data["file_mtime"] = None
         return cls(**data)
 
     def calculate_quality_score(self, fonts_in_group: List["FontMetadata"]) -> float:
@@ -374,9 +391,13 @@ def _file_lock(file_path: Path, mode: str = "r"):
     while attempt < LOCK_RETRY_MAX_ATTEMPTS and not lock_acquired:
         try:
             if mode == "r":
-                file_handle = open(file_path, "r", encoding="utf-8")
+                file_handle = open(
+                    file_path, "r", encoding="utf-8", errors="replace"
+                )
             else:
-                file_handle = open(file_path, "w", encoding="utf-8")
+                file_handle = open(
+                    file_path, "w", encoding="utf-8", errors="replace"
+                )
 
             # Try to acquire lock
             if HAS_FCNTL:
@@ -431,6 +452,8 @@ def _file_lock(file_path: Path, mode: str = "r"):
 def load_cache(directory: Path) -> Dict[str, FontMetadata]:
     """
     Load metadata cache from directory with corruption recovery and file locking.
+    Cached entries are validated on use (in process_single_font_metadata) by file
+    size and, when present, filesystem mtime; stale entries are re-extracted.
 
     Cache file format:
     {
@@ -445,6 +468,7 @@ def load_cache(directory: Path) -> Dict[str, FontMetadata]:
             "file_path": "/path/to/file.ttf",
             "original_filename": "oldname.ttf",
             "detected_format": "ttf",
+            "file_mtime": 1707321600.0,
             "language_support": ["latin", "cyrillic"],
             "opentype_features": ["kern", "liga"],
             "quality_score": 1234.5,
@@ -552,12 +576,16 @@ def cleanup_cache(directory: Path) -> None:
 # ============================================================================
 
 
+# Languages that trigger early exit when all are detected (single-pass optimization)
+PRIORITY_LANGUAGES = frozenset({"latin", "latin-extended", "cyrillic", "greek"})
+
+
 def detect_language_support_from_font(font: TTFont) -> set:
     """
     Detect language support from Unicode coverage in opened font.
 
     Optimized single-pass iteration through codepoints for better performance.
-    Early exit when all common languages are detected.
+    Early exit when all priority languages (latin, latin-extended, cyrillic, greek) are detected.
     """
     try:
         cmap = font.getBestCmap()
@@ -565,7 +593,7 @@ def detect_language_support_from_font(font: TTFont) -> set:
             return {"latin"}
 
         codepoints = set(cmap.keys())
-        languages = set()
+        languages: set = set()
 
         # Common languages to detect (ordered by frequency)
         # Single pass through codepoints instead of multiple any() calls
@@ -592,15 +620,9 @@ def detect_language_support_from_font(font: TTFont) -> set:
             elif 0x0590 <= cp <= 0x05FF:
                 languages.add("hebrew")
 
-            # Early exit optimization: if we've detected all common languages
-            # (latin, latin-extended, cyrillic, greek), we can stop early
-            if (
-                len(languages) >= 4
-                and "latin" in languages
-                and "latin-extended" in languages
-            ):
-                if "cyrillic" in languages and "greek" in languages:
-                    break
+            # Early exit when all priority languages are detected
+            if len(languages & PRIORITY_LANGUAGES) == 4:
+                break
 
         return languages if languages else {"latin"}
     except Exception:
@@ -631,8 +653,12 @@ def extract_opentype_features_from_font(font: TTFont) -> set:
     return features
 
 
-def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
-    """Extract enhanced metadata from a font file"""
+def extract_metadata(
+    font_path: Path, *, silent: bool = False
+) -> Optional[FontMetadata]:
+    """Extract enhanced metadata from a font file.
+    When silent=True, no console output (for use in worker processes).
+    """
     try:
         font = TTFont(str(font_path))
 
@@ -683,7 +709,9 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
         # Variable font detection (use LENIENT mode to catch technically valid variable fonts)
         is_variable = is_variable_font(font, mode=VariableFontMode.LENIENT)
 
-        file_size = font_path.stat().st_size
+        file_stat = font_path.stat()
+        file_size = file_stat.st_size
+        file_mtime = file_stat.st_mtime
 
         font.close()
 
@@ -698,6 +726,7 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
             file_path=str(font_path),
             original_filename=font_path.name,
             detected_format=detected_format,
+            file_mtime=file_mtime,
             language_support=language_support,
             opentype_features=opentype_features,
             typographic_family=typographic_family,
@@ -705,11 +734,16 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
             is_variable=is_variable,
         )
     except Exception as e:
-        if console:
+        if not silent and console:
             cs.StatusIndicator("error").add_file(
                 font_path.name, filename_only=True
             ).with_explanation(f"Failed to read: {e}").emit()
         return None
+
+
+def _extract_metadata_worker(extract_path: Path) -> Optional[FontMetadata]:
+    """Worker for parallel metadata extraction; no console output."""
+    return extract_metadata(extract_path, silent=True)
 
 
 def contains_problematic_pattern(ps_name: str) -> Tuple[bool, str]:
@@ -729,47 +763,18 @@ def contains_problematic_pattern(ps_name: str) -> Tuple[bool, str]:
     return False, ""
 
 
-def is_valid_postscript_name(ps_name: str) -> Tuple[bool, str]:
-    """Validate PostScript name is safe for filename"""
-    if not ps_name or ps_name.strip() == "":
-        return False, "empty name"
-
-    if ps_name.isspace():
-        return False, "contains only spaces"
-
-    for char in ps_name:
-        code = ord(char)
-        if code < 32 or code == 127:
-            return False, f"contains control character (ASCII {code})"
-
-    problematic_chars = ["?", "/", "\\", ":", "*", '"', "<", ">", "|"]
-    for char in problematic_chars:
-        if char in ps_name:
-            return False, f"contains '{char}'"
-
-    if ps_name.startswith(" ") or ps_name.endswith(" "):
-        return False, "begins or ends with a space"
-
-    forbidden_first_chars = ["_", "-", "."]
-    if ps_name[0] in forbidden_first_chars:
-        return False, f"begins with '{ps_name[0]}'"
-
-    has_problem, pattern = contains_problematic_pattern(ps_name)
-    if has_problem:
-        return False, f"contains '{pattern}'"
-
-    return True, ""
-
-
-def validate_typographic_name(name: str) -> Tuple[bool, str]:
+def _validate_font_name(name: str, context: str = "name") -> Tuple[bool, str]:
     """
-    Validate typographic name using same rules as PostScript name validation.
+    Common validation for font names safe for use as filenames (PostScript or typographic).
+    Checks empty/whitespace, control chars, problematic path chars, leading/trailing space,
+    forbidden first character, and problematic content patterns.
 
     Args:
-        name: Typographic name to validate
+        name: The name string to validate
+        context: Label for error messages (e.g. "PostScript name", "typographic name")
 
     Returns:
-        Tuple of (is_valid, reason) where reason is empty if valid
+        Tuple of (is_valid, reason); reason is empty when valid.
     """
     if not name or name.strip() == "":
         return False, "empty name"
@@ -799,6 +804,24 @@ def validate_typographic_name(name: str) -> Tuple[bool, str]:
         return False, f"contains '{pattern}'"
 
     return True, ""
+
+
+def is_valid_postscript_name(ps_name: str) -> Tuple[bool, str]:
+    """Validate PostScript name is safe for filename."""
+    return _validate_font_name(ps_name, "PostScript name")
+
+
+def validate_typographic_name(name: str) -> Tuple[bool, str]:
+    """
+    Validate typographic name using same rules as PostScript name validation.
+
+    Args:
+        name: Typographic name to validate
+
+    Returns:
+        Tuple of (is_valid, reason) where reason is empty if valid
+    """
+    return _validate_font_name(name, "typographic name")
 
 
 def generate_typographic_filename(
@@ -1000,6 +1023,15 @@ def assign_final_names(
     Assign final names based on PostScript name or typographic names and quality score.
     Highest quality gets clean name, others get ~001, ~002, etc.
     Uses normalized paths for consistent mapping.
+
+    Variable font conflict resolution:
+    - Static and variable fonts with the same PostScript name are processed separately.
+    - Static fonts get the base name (e.g. Family-Style.otf); duplicates get ~001, ~002.
+    - Variable fonts get the same base name when the group has only variable fonts.
+    - When both static and variable exist in the group, variable fonts get a "-Variable"
+      suffix (e.g. Family-Style-Variable.otf) so both can coexist without collision.
+    - Suffix format ~001..~999 is used for duplicate base names within each subgroup;
+      subgroups larger than 999 use ~1000, ~1001, etc. (no hard cap).
 
     Args:
         ps_name_groups: Fonts grouped by PostScript name and format
@@ -1234,34 +1266,44 @@ def execute_final_renames(
 # ============================================================================
 
 
-def restore_temp_file(temp_path: Path, original_path: Path, dry_run: bool) -> None:
-    """Restore a temp file to its original name with error handling"""
-    if not dry_run:
-        try:
-            if temp_path.exists():
-                temp_path.rename(original_path)
-        except FileNotFoundError:
-            pass
-        except PermissionError as e:
-            if console:
-                cs.StatusIndicator("warning").add_file(
-                    original_path.name, filename_only=True
-                ).with_explanation(
-                    f"Cannot restore temp file (permission denied): {e}"
-                ).emit()
-        except OSError as e:
-            if console:
-                cs.StatusIndicator("warning").add_file(
-                    original_path.name, filename_only=True
-                ).with_explanation(f"Cannot restore temp file: {e}").emit()
-        except Exception as e:
-            if console:
-                cs.StatusIndicator("warning").add_file(
-                    original_path.name, filename_only=True
-                ).with_explanation(f"Unexpected error restoring temp file: {e}").emit()
+def restore_temp_file(temp_path: Path, original_path: Path, dry_run: bool) -> bool:
+    """
+    Restore a temp file to its original name with error handling.
+
+    Returns:
+        True if restored or dry_run, False if restore failed.
+    """
+    if dry_run:
+        return True
+    try:
+        if temp_path.exists():
+            temp_path.rename(original_path)
+        return True
+    except FileNotFoundError:
+        return True
+    except PermissionError as e:
+        if console:
+            cs.StatusIndicator("warning").add_file(
+                original_path.name, filename_only=True
+            ).with_explanation(
+                f"Cannot restore temp file (permission denied): {e}"
+            ).emit()
+        return False
+    except OSError as e:
+        if console:
+            cs.StatusIndicator("warning").add_file(
+                original_path.name, filename_only=True
+            ).with_explanation(f"Cannot restore temp file: {e}").emit()
+        return False
+    except Exception as e:
+        if console:
+            cs.StatusIndicator("warning").add_file(
+                original_path.name, filename_only=True
+            ).with_explanation(f"Unexpected error restoring temp file: {e}").emit()
+        return False
 
 
-def cleanup_temp_files(temp_mapping: Dict[Path, Path], dry_run: bool) -> None:
+def cleanup_temp_files(temp_mapping: Dict[Path, Path], dry_run: bool) -> int:
     """
     Restore all temp files to their original names.
     Used for cleanup on error or cancellation.
@@ -1269,12 +1311,17 @@ def cleanup_temp_files(temp_mapping: Dict[Path, Path], dry_run: bool) -> None:
     Args:
         temp_mapping: Mapping of temp_path -> original_path
         dry_run: If True, no actual file operations are performed
+
+    Returns:
+        Number of restorations that failed (0 on success or dry_run).
     """
     if dry_run:
-        return
-
+        return 0
+    failures = 0
     for temp_path, original_path in temp_mapping.items():
-        restore_temp_file(temp_path, original_path, dry_run)
+        if not restore_temp_file(temp_path, original_path, dry_run):
+            failures += 1
+    return failures
 
 
 def process_single_font_metadata(
@@ -1291,15 +1338,22 @@ def process_single_font_metadata(
     """
     original_name = original_path.name
 
-    # Try cache first
+    # Try cache first (validate by file size and, when available, mtime)
     metadata = None
     if original_name in cache:
         cached = cache[original_name]
         # In dry-run mode, temp_path won't exist, so check original_path
         check_path = original_path if dry_run else temp_path
-        if check_path.exists() and cached.file_size == check_path.stat().st_size:
-            metadata = cached
-            metadata.file_path = str(temp_path if not dry_run else original_path)
+        if check_path.exists():
+            st = check_path.stat()
+            size_ok = cached.file_size == st.st_size
+            mtime_ok = (
+                cached.file_mtime is None
+                or abs(cached.file_mtime - st.st_mtime) < CACHE_MTIME_TOLERANCE_SEC
+            )
+            if size_ok and mtime_ok:
+                metadata = cached
+                metadata.file_path = str(temp_path if not dry_run else original_path)
 
     # Extract if not cached
     if metadata is None:
@@ -1331,7 +1385,7 @@ def process_single_font_metadata(
 
 
 def collect_directory_fonts(directory: Path) -> List[Path]:
-    """Collect font files from directory, excluding temp files and cache"""
+    """Collect font files from directory, excluding temp files, cache, and symlinks"""
     font_files = []
     for ext in FONT_EXTENSIONS:
         font_files.extend(directory.glob(f"*{ext}"))
@@ -1340,10 +1394,13 @@ def collect_directory_fonts(directory: Path) -> List[Path]:
     seen = set()
     result = []
     for f in font_files:
-        if f not in seen:
-            if not f.name.startswith("_tmp_") and f.name != INDEX_FILENAME:
-                seen.add(f)
-                result.append(f)
+        if f in seen:
+            continue
+        if f.is_symlink():
+            continue
+        if not f.name.startswith("_tmp_") and f.name != INDEX_FILENAME:
+            seen.add(f)
+            result.append(f)
 
     return result
 
@@ -1367,11 +1424,22 @@ def _prepare_directory(
     """Prepare directory for processing: collect files, check space, rename to temp"""
     if specific_files is not None:
         # Use provided specific files, filtering to only those in this directory
-        # Normalize paths for consistent comparison
+        # Normalize paths for consistent comparison; reject symlinks
         normalized_dir = normalize_path(directory)
-        font_files = [
-            f for f in specific_files if normalize_path(f.parent) == normalized_dir
-        ]
+        font_files = []
+        for f in specific_files:
+            if normalize_path(f.parent) != normalized_dir:
+                continue
+            try:
+                if f.is_symlink():
+                    if console:
+                        cs.StatusIndicator("warning").add_file(
+                            f.name, filename_only=True
+                        ).with_explanation("Skipping symlink").emit()
+                    continue
+            except OSError:
+                continue
+            font_files.append(f)
     else:
         # Collect all fonts in directory (backward compatible behavior)
         font_files = collect_directory_fonts(directory)
@@ -1396,6 +1464,40 @@ def _prepare_directory(
     return font_files, temp_mapping
 
 
+def _process_extracted_metadata(
+    temp_path: Path,
+    original_path: Path,
+    metadata: Optional[FontMetadata],
+    cache: Dict[str, FontMetadata],
+    rename_all: bool,
+    dry_run: bool,
+    verbose: bool,
+    stats: RenameStats,
+    font_metadata: Dict[Path, FontMetadata],
+) -> None:
+    """Apply validation and store (or restore on skip). Shared by sequential and parallel paths."""
+    original_name = original_path.name
+    if metadata is None:
+        stats.invalid += 1
+        if console:
+            cs.StatusIndicator("warning").add_file(
+                original_name, filename_only=True
+            ).with_explanation("Skipping invalid font").emit()
+        restore_temp_file(temp_path, original_path, dry_run)
+        return
+    metadata.original_filename = original_name
+    is_valid, reason = is_valid_postscript_name(metadata.ps_name)
+    if not is_valid and not rename_all:
+        if console and verbose:
+            cs.StatusIndicator("warning").add_file(
+                original_name, filename_only=True
+            ).with_explanation(f"Skipping: {reason}").emit()
+        restore_temp_file(temp_path, original_path, dry_run)
+        return
+    font_metadata[temp_path] = metadata
+    cache[original_name] = metadata
+
+
 def _extract_and_group_metadata(
     temp_mapping: Dict[Path, Path],
     cache: Dict[str, FontMetadata],
@@ -1404,20 +1506,85 @@ def _extract_and_group_metadata(
     verbose: bool,
     stats: RenameStats,
 ) -> Tuple[Dict[Path, FontMetadata], Dict[str, List[FontMetadata]]]:
-    """Extract metadata from fonts and group by PostScript name and format"""
+    """Extract metadata from fonts and group by PostScript name and format.
+    Uses parallel extraction when uncached file count >= PARALLEL_EXTRACT_THRESHOLD.
+    """
     font_metadata: Dict[Path, FontMetadata] = {}
 
+    cached_items: List[Tuple[Path, Path, FontMetadata]] = []
+    need_extraction: List[Tuple[Path, Path, Path]] = []
+
     for temp_path, original_path in temp_mapping.items():
-        metadata = process_single_font_metadata(
-            temp_path, original_path, cache, rename_all, dry_run, verbose
+        original_name = original_path.name
+        metadata = None
+        if original_name in cache:
+            cached = cache[original_name]
+            check_path = original_path if dry_run else temp_path
+            if check_path.exists():
+                st = check_path.stat()
+                size_ok = cached.file_size == st.st_size
+                mtime_ok = (
+                    cached.file_mtime is None
+                    or abs(cached.file_mtime - st.st_mtime)
+                    < CACHE_MTIME_TOLERANCE_SEC
+                )
+                if size_ok and mtime_ok:
+                    metadata = cached
+                    metadata.file_path = str(
+                        temp_path if not dry_run else original_path
+                    )
+        if metadata is not None:
+            cached_items.append((temp_path, original_path, metadata))
+        else:
+            extract_path = original_path if dry_run else temp_path
+            need_extraction.append((temp_path, original_path, extract_path))
+
+    for temp_path, original_path, meta in cached_items:
+        _process_extracted_metadata(
+            temp_path,
+            original_path,
+            meta,
+            cache,
+            rename_all,
+            dry_run,
+            verbose,
+            stats,
+            font_metadata,
         )
 
-        if metadata is None:
-            stats.invalid += 1
-            continue
+    if need_extraction:
+        use_parallel = len(need_extraction) >= PARALLEL_EXTRACT_THRESHOLD
+        extract_paths = [t[2] for t in need_extraction]
 
-        font_metadata[temp_path] = metadata
-        cache[original_path.name] = metadata
+        if use_parallel:
+            n_workers = min(
+                PARALLEL_MAX_WORKERS_DEFAULT,
+                len(need_extraction),
+            )
+            if console and verbose:
+                cs.StatusIndicator("info").with_explanation(
+                    f"Extracting metadata in parallel ({n_workers} workers, "
+                    f"{len(need_extraction)} files)"
+                ).emit()
+            with Pool(processes=n_workers) as pool:
+                results = pool.map(_extract_metadata_worker, extract_paths)
+        else:
+            results = [
+                extract_metadata(extract_path) for extract_path in extract_paths
+            ]
+
+        for (temp_path, original_path, _), meta in zip(need_extraction, results):
+            _process_extracted_metadata(
+                temp_path,
+                original_path,
+                meta,
+                cache,
+                rename_all,
+                dry_run,
+                verbose,
+                stats,
+                font_metadata,
+            )
 
     if not font_metadata:
         return {}, {}
@@ -1447,7 +1614,16 @@ def _validate_and_prepare(
     """
     Validate directory and prepare for processing.
     Returns font_files, temp_mapping, and cache.
+    Rejects symlinked directories and symlinked font files for safety.
     """
+    try:
+        if directory.is_symlink():
+            raise ValueError(
+                f"Symlinks not allowed: {directory}. Use the real path."
+            )
+    except OSError as e:
+        raise ValueError(f"Cannot resolve directory {directory}: {e}") from e
+
     font_files, temp_mapping = _prepare_directory(
         directory, dry_run, verbose, specific_files
     )
@@ -1523,7 +1699,12 @@ def process_directory(
                 cs.StatusIndicator("warning").with_explanation(
                     f"Error during processing, restoring temp files: {e}"
                 ).emit()
-            cleanup_temp_files(temp_mapping, dry_run)
+            cleanup_failures = cleanup_temp_files(temp_mapping, dry_run)
+            if cleanup_failures > 0 and console:
+                cs.StatusIndicator("warning").with_explanation(
+                    f"{cleanup_failures} temp file(s) could not be restored; "
+                    "check permissions and restore manually if needed."
+                ).emit()
         raise
 
     return stats
@@ -1886,7 +2067,9 @@ def recover_orphaned_temp_files(directory: Path) -> int:
 
     if transaction_path.exists():
         try:
-            with open(transaction_path, "r", encoding="utf-8") as f:
+            with open(
+                transaction_path, "r", encoding="utf-8", errors="replace"
+            ) as f:
                 transaction_data = json.load(f)
                 if (
                     isinstance(transaction_data, dict)
@@ -1961,6 +2144,10 @@ def show_directory_stats(dir_stats: RenameStats, verbose: bool) -> None:
 
 
 def main():
+    # On Windows (spawn), child processes re-import this module and would run main();
+    # exit immediately so only the parent runs the CLI and creates Pools.
+    if current_process().name != "MainProcess":
+        return 0
     parser = argparse.ArgumentParser(
         description="Rename font files to PostScript names with intelligent quality scoring",
         formatter_class=argparse.RawDescriptionHelpFormatter,
