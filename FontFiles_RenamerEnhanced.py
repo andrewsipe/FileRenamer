@@ -20,6 +20,7 @@ Options:
     -n, --dry-run       Preview changes without renaming
     -ra, --rename-all   Rename even fonts with invalid PostScript names
     -v, --verbose       Show detailed processing information
+    --no-progress       Disable progress during metadata reads (bar or text)
     --show-quality      Display quality scores in preview
 """
 
@@ -33,7 +34,7 @@ import time
 from multiprocessing import Pool, cpu_count, current_process
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
 from contextlib import contextmanager
 
 from fontTools.ttLib import TTFont
@@ -118,6 +119,8 @@ CACHE_MTIME_TOLERANCE_SEC = 1.0
 # Parallel metadata extraction: use multiprocessing when uncached file count >= threshold
 PARALLEL_EXTRACT_THRESHOLD = 30
 PARALLEL_MAX_WORKERS_DEFAULT = max(1, (cpu_count() or 2) - 1)
+# Show Rich/text progress when this many files need extraction (avoids flicker on tiny jobs)
+PROGRESS_MIN_FILES = 8
 
 # ============================================================================
 # Data Classes
@@ -744,6 +747,97 @@ def extract_metadata(
 def _extract_metadata_worker(extract_path: Path) -> Optional[FontMetadata]:
     """Worker for parallel metadata extraction; no console output."""
     return extract_metadata(extract_path, silent=True)
+
+
+def _extract_metadata_worker_indexed(
+    item: Tuple[int, Path],
+) -> Tuple[int, Optional[FontMetadata]]:
+    """Indexed worker for imap_unordered + progress (preserves result order by index)."""
+    idx, extract_path = item
+    return idx, extract_metadata(extract_path, silent=True)
+
+
+def _metadata_from_cache_if_valid(
+    font_path: Path, cache: Dict[str, FontMetadata]
+) -> Optional[FontMetadata]:
+    """Return a copy of cached metadata if file matches size/mtime; else None."""
+    name = font_path.name
+    if name not in cache:
+        return None
+    if not font_path.exists():
+        return None
+    cached = cache[name]
+    try:
+        st = font_path.stat()
+    except OSError:
+        return None
+    if cached.file_size != st.st_size:
+        return None
+    if cached.file_mtime is not None and abs(cached.file_mtime - st.st_mtime) >= CACHE_MTIME_TOLERANCE_SEC:
+        return None
+    return replace(cached, file_path=str(font_path))
+
+
+def _parallel_extract_metadata(
+    extract_paths: List[Path],
+    n_workers: int,
+    description: str,
+    show_progress: bool,
+) -> List[Optional[FontMetadata]]:
+    """
+    Extract metadata in parallel; optional Rich progress or plain text progress lines.
+    When show_progress is False, uses pool.map (no progress overhead).
+    """
+    total = len(extract_paths)
+    if total == 0:
+        return []
+    n_workers = min(max(1, n_workers), total)
+
+    if not show_progress or total < PROGRESS_MIN_FILES:
+        with Pool(processes=n_workers) as pool:
+            return pool.map(_extract_metadata_worker, extract_paths)
+
+    indexed = list(enumerate(extract_paths))
+    results: List[Optional[FontMetadata]] = [None] * total
+    chunksize = max(1, min(8, total // max(1, n_workers * 4)))
+
+    use_rich = bool(cs.RICH_AVAILABLE and console)
+    if use_rich:
+        try:
+            progress = cs.create_progress_bar(console)
+            with progress:
+                task_id = progress.add_task(description, total=total)
+                with Pool(processes=n_workers) as pool:
+                    for idx, meta in pool.imap_unordered(
+                        _extract_metadata_worker_indexed,
+                        indexed,
+                        chunksize=chunksize,
+                    ):
+                        results[idx] = meta
+                        progress.update(task_id, advance=1)
+            return results
+        except (ImportError, RuntimeError, OSError):
+            pass
+
+    # Plain progress (no Rich or Rich failed)
+    completed = 0
+    step = max(1, total // 20)
+    with Pool(processes=n_workers) as pool:
+        for idx, meta in pool.imap_unordered(
+            _extract_metadata_worker_indexed,
+            indexed,
+            chunksize=chunksize,
+        ):
+            results[idx] = meta
+            completed += 1
+            if completed == total or completed % step == 0:
+                msg = f"{description}: {completed}/{total}"
+                if console:
+                    cs.emit(f"{cs.indent(1)}{msg}")
+                else:
+                    print(msg, flush=True)
+
+    return results
 
 
 def contains_problematic_pattern(ps_name: str) -> Tuple[bool, str]:
@@ -1446,7 +1540,7 @@ def _prepare_directory(
     if not font_files:
         return [], {}
 
-    if console and verbose:
+    if console and (verbose or len(font_files) >= PROGRESS_MIN_FILES):
         cs.StatusIndicator("info").add_message(
             f"Processing {cs.fmt_count(len(font_files))} files in {cs.fmt_file_compact(str(directory))}"
         ).emit()
@@ -1505,6 +1599,7 @@ def _extract_and_group_metadata(
     dry_run: bool,
     verbose: bool,
     stats: RenameStats,
+    show_progress: bool = True,
 ) -> Tuple[Dict[Path, FontMetadata], Dict[str, List[FontMetadata]]]:
     """Extract metadata from fonts and group by PostScript name and format.
     Uses parallel extraction when uncached file count >= PARALLEL_EXTRACT_THRESHOLD.
@@ -1566,8 +1661,16 @@ def _extract_and_group_metadata(
                     f"Extracting metadata in parallel ({n_workers} workers, "
                     f"{len(need_extraction)} files)"
                 ).emit()
-            with Pool(processes=n_workers) as pool:
-                results = pool.map(_extract_metadata_worker, extract_paths)
+            elif console and show_progress and len(need_extraction) >= PROGRESS_MIN_FILES:
+                cs.StatusIndicator("info").with_explanation(
+                    f"Extracting metadata ({len(need_extraction)} files, {n_workers} workers)"
+                ).emit()
+            results = _parallel_extract_metadata(
+                extract_paths,
+                n_workers,
+                "Extracting font metadata",
+                show_progress,
+            )
         else:
             results = [
                 extract_metadata(extract_path) for extract_path in extract_paths
@@ -1651,6 +1754,7 @@ def process_directory(
     verbose: bool = False,
     use_typographic_names: bool = False,
     specific_files: Optional[List[Path]] = None,
+    show_progress: bool = True,
 ) -> RenameStats:
     """
     Process all font files in a single directory.
@@ -1669,7 +1773,13 @@ def process_directory(
         stats.total_files = len(font_files)
 
         font_metadata, ps_name_groups = _extract_and_group_metadata(
-            temp_mapping, cache, rename_all, dry_run, verbose, stats
+            temp_mapping,
+            cache,
+            rename_all,
+            dry_run,
+            verbose,
+            stats,
+            show_progress=show_progress,
         )
 
         if not dry_run:
@@ -1760,6 +1870,7 @@ def analyze_renames(
     font_paths: List[str],
     rename_all: bool = False,
     use_typographic_names: bool = False,
+    show_progress: bool = True,
 ) -> Dict[str, List[RenamePreview]]:
     """Analyze what renames would occur without actually performing them"""
     dirs_to_process = group_files_by_directory(font_paths)
@@ -1771,19 +1882,50 @@ def analyze_renames(
         cache = load_cache(directory)
 
         font_metadata: Dict[Path, FontMetadata] = {}
+        cached_pairs: List[Tuple[Path, FontMetadata]] = []
+        need_extract: List[Path] = []
+
         for font_path in font_files:
-            metadata = extract_metadata(font_path)
+            meta = _metadata_from_cache_if_valid(font_path, cache)
+            if meta is not None:
+                cached_pairs.append((font_path, meta))
+            else:
+                need_extract.append(font_path)
 
-            if metadata is None:
-                continue
-
+        for font_path, metadata in cached_pairs:
             is_valid, _ = is_valid_postscript_name(metadata.ps_name)
             if not is_valid and not rename_all:
                 continue
-
             metadata.original_filename = font_path.name
             font_metadata[font_path] = metadata
-            cache[font_path.name] = metadata
+
+        if need_extract:
+            use_parallel = len(need_extract) >= PARALLEL_EXTRACT_THRESHOLD
+            n_workers = min(PARALLEL_MAX_WORKERS_DEFAULT, len(need_extract))
+            if console and show_progress and len(need_extract) >= PROGRESS_MIN_FILES:
+                cs.StatusIndicator("info").with_explanation(
+                    f"Preview: reading {len(need_extract)} font(s)"
+                    + (f" ({n_workers} workers)" if use_parallel else "")
+                ).emit()
+            if use_parallel:
+                extracted = _parallel_extract_metadata(
+                    need_extract,
+                    n_workers,
+                    "Preview: reading fonts",
+                    show_progress,
+                )
+            else:
+                extracted = [extract_metadata(p) for p in need_extract]
+
+            for font_path, metadata in zip(need_extract, extracted):
+                if metadata is None:
+                    continue
+                is_valid, _ = is_valid_postscript_name(metadata.ps_name)
+                if not is_valid and not rename_all:
+                    continue
+                metadata.original_filename = font_path.name
+                font_metadata[font_path] = metadata
+                cache[font_path.name] = metadata
 
         if not font_metadata:
             continue
@@ -2188,6 +2330,11 @@ Examples:
         help="Show detailed processing information",
     )
     parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable progress bar (or plain text progress) while reading font metadata",
+    )
+    parser.add_argument(
         "--no-preview",
         action="store_true",
         help="Skip preflight preview and proceed directly",
@@ -2295,6 +2442,7 @@ Examples:
             font_paths,
             rename_all=args.rename_all,
             use_typographic_names=args.use_typographic_names,
+            show_progress=not args.no_progress,
         )
 
         if previews_by_dir:
@@ -2339,6 +2487,7 @@ Examples:
             verbose=args.verbose,
             use_typographic_names=args.use_typographic_names,
             specific_files=specific_files,
+            show_progress=not args.no_progress,
         )
 
         total_stats.total_files += dir_stats.total_files
