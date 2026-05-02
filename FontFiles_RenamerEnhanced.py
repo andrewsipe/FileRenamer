@@ -20,6 +20,7 @@ Options:
     -n, --dry-run       Preview changes without renaming
     -ra, --rename-all   Rename even fonts with invalid PostScript names
     -v, --verbose       Show detailed processing information
+    -ff, --force-family Override extracted family with provided value
     --no-progress       Disable progress during metadata reads (bar or text)
     --show-quality      Display quality scores in preview
 """
@@ -1112,6 +1113,7 @@ def rename_to_temp(font_files: List[Path], dry_run: bool = False) -> Dict[Path, 
 def assign_final_names(
     ps_name_groups: Dict[str, List[FontMetadata]],
     use_typographic_names: bool = False,
+    force_family: Optional[str] = None,
 ) -> Dict[Path, str]:
     """
     Assign final names based on PostScript name or typographic names and quality score.
@@ -1130,6 +1132,7 @@ def assign_final_names(
     Args:
         ps_name_groups: Fonts grouped by PostScript name and format
         use_typographic_names: If True, use nameID 16/17 for filenames when available
+        force_family: Optional family override to use instead of extracted nameID 16
     """
     rename_map: Dict[Path, str] = {}
     typographic_used_count = 0
@@ -1150,7 +1153,8 @@ def assign_final_names(
             # Try to use typographic name from highest quality font
             top_font = sorted_fonts[0]
             typo_name = generate_typographic_filename(
-                top_font.typographic_family, top_font.typographic_subfamily
+                force_family or top_font.typographic_family,
+                top_font.typographic_subfamily,
             )
             if typo_name:
                 base_name = typo_name
@@ -1168,7 +1172,8 @@ def assign_final_names(
         def _effective_base_name(meta: FontMetadata, default: str) -> str:
             if use_typographic_names:
                 typo_name = generate_typographic_filename(
-                    meta.typographic_family, meta.typographic_subfamily
+                    force_family or meta.typographic_family,
+                    meta.typographic_subfamily,
                 )
                 return typo_name if typo_name else meta.ps_name
             return default
@@ -1753,6 +1758,7 @@ def process_directory(
     dry_run: bool = False,
     verbose: bool = False,
     use_typographic_names: bool = False,
+    force_family: Optional[str] = None,
     specific_files: Optional[List[Path]] = None,
     show_progress: bool = True,
 ) -> RenameStats:
@@ -1789,7 +1795,9 @@ def process_directory(
             return stats
 
         rename_map = assign_final_names(
-            ps_name_groups, use_typographic_names=use_typographic_names
+            ps_name_groups,
+            use_typographic_names=use_typographic_names,
+            force_family=force_family,
         )
 
         rename_stats = _execute_rename_phase(
@@ -1870,6 +1878,7 @@ def analyze_renames(
     font_paths: List[str],
     rename_all: bool = False,
     use_typographic_names: bool = False,
+    force_family: Optional[str] = None,
     show_progress: bool = True,
 ) -> Dict[str, List[RenamePreview]]:
     """Analyze what renames would occur without actually performing them"""
@@ -1936,7 +1945,9 @@ def analyze_renames(
         # assign_final_names calculates quality scores via sort_by_quality_score
         # Since metadata objects are shared, scores are set on the objects in font_metadata
         rename_map = assign_final_names(
-            ps_name_groups, use_typographic_names=use_typographic_names
+            ps_name_groups,
+            use_typographic_names=use_typographic_names,
+            force_family=force_family,
         )
 
         previews = []
@@ -2355,12 +2366,27 @@ Examples:
         help="Show detailed quality score comparisons explaining why one font wins over another",
     )
     parser.add_argument(
+        "-ff",
+        "--force-family",
+        type=str,
+        help="Override extracted typographic family (nameID 16) with this value when generating typographic filenames",
+    )
+    parser.add_argument(
         "--recover",
         action="store_true",
         help="Recover orphaned temp files from previous interrupted runs",
     )
 
     args = parser.parse_args()
+
+    if args.force_family is not None:
+        args.force_family = args.force_family.strip()
+        if not args.force_family:
+            if console:
+                cs.StatusIndicator("error").with_explanation(
+                    "--force-family cannot be empty"
+                ).emit()
+            return 1
 
     if not args.paths:
         args.paths = ["."]
@@ -2442,6 +2468,7 @@ Examples:
             font_paths,
             rename_all=args.rename_all,
             use_typographic_names=args.use_typographic_names,
+            force_family=args.force_family,
             show_progress=not args.no_progress,
         )
 
@@ -2486,6 +2513,7 @@ Examples:
             dry_run=args.dry_run,
             verbose=args.verbose,
             use_typographic_names=args.use_typographic_names,
+            force_family=args.force_family,
             specific_files=specific_files,
             show_progress=not args.no_progress,
         )
