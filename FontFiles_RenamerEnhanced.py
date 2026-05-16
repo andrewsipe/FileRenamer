@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-Font File Renamer - PostScript name-based renaming with intelligent quality scoring
+Font File Renamer - Name-table-based renaming with intelligent quality scoring
 
-Renames font files to their PostScript names with comprehensive quality analysis:
-- Two-pass renaming (temp UUID → PostScript names)
-- Quality-aware priority (considers revision, language support, features, glyphs)
-- Multiple fonts with same PS name get ~001, ~002, etc. suffixes
-- Per-directory isolation (processes each directory independently)
-- Cached metadata support (speeds up repeated runs)
+Renames font files using stems derived from the OpenType name table (default: PostScript
+name / nameID 6), with optional stems via -N/--stem (typographic, full, legacy, unique ID).
+Quality-aware priority (revision, language support, features, glyphs) and two-pass renaming
+(temp UUID → final names). Per-directory isolation; optional metadata cache.
 
 Usage:
     python FontFiles_Rename.py /path/to/fonts/
     python FontFiles_Rename.py font1.otf font2.otf
     python FontFiles_Rename.py /directory/ -r
     python FontFiles_Rename.py /directory/ -n
+    python FontFiles_Rename.py fonts/ -N typo
 
 Options:
     -r, --recursive     Process directories recursively
     -n, --dry-run       Preview changes without renaming
+    -N, --stem MODE     Filename stem: ps | typo | full | legacy | uid (see --help)
     -ra, --rename-all   Rename even fonts with invalid PostScript names
     -v, --verbose       Show detailed processing information
     -ff, --force-family Override extracted family with provided value
@@ -34,7 +34,7 @@ import argparse
 import time
 from multiprocessing import Pool, cpu_count, current_process
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from dataclasses import dataclass, asdict, field, replace
 from contextlib import contextmanager
 
@@ -79,6 +79,10 @@ from FontCore.core_variable_font_detection import (  # noqa: E402
     is_variable_font,
     VariableFontMode,
 )
+from FontCore.core_name_policies import (  # noqa: E402
+    get_name_string_unicode_fallback,
+    sanitize_postscript,
+)
 
 console = cs.get_console()
 
@@ -89,6 +93,57 @@ console = cs.get_console()
 INDEX_FILENAME = ".font_rename_cache.json"
 TRANSACTION_FILENAME = ".font_rename_transaction.json"
 FONT_EXTENSIONS = {".ttf", ".otf", ".woff", ".woff2"}
+
+# Filename stem source (CLI: -N / --stem). Aligns with FontCore name-table policy helpers.
+FILENAME_STEM_POSTSCRIPT = "ps"  # nameID 6
+FILENAME_STEM_TYPOGRAPHIC = "typo"  # nameID 16 + 17
+FILENAME_STEM_FULL = "full"  # nameID 4 (full font name)
+FILENAME_STEM_LEGACY = "legacy"  # nameID 1 + 2 (RIBBI-style family/subfamily)
+FILENAME_STEM_UNIQUE = "uid"  # nameID 3 (unique font identifier)
+FILENAME_STEM_BEST = "best"  # per-file: typo → ps → uid → full → legacy → original name
+
+FILENAME_STEM_ALIASES = {
+    "postscript": FILENAME_STEM_POSTSCRIPT,
+    "typographic": FILENAME_STEM_TYPOGRAPHIC,
+}
+
+FILENAME_STEM_CHOICES = (
+    FILENAME_STEM_POSTSCRIPT,
+    FILENAME_STEM_TYPOGRAPHIC,
+    FILENAME_STEM_FULL,
+    FILENAME_STEM_LEGACY,
+    FILENAME_STEM_UNIQUE,
+    FILENAME_STEM_BEST,
+)
+
+DEFAULT_FILENAME_STEM = FILENAME_STEM_POSTSCRIPT
+
+# Stem modes that may produce a valid filename without a usable PostScript name (ID 6).
+STEM_SOURCES_ALLOWING_INVALID_POSTSCRIPT = frozenset(
+    {
+        FILENAME_STEM_BEST,
+        FILENAME_STEM_FULL,
+        FILENAME_STEM_LEGACY,
+        FILENAME_STEM_UNIQUE,
+    }
+)
+
+
+def stem_mode_allows_missing_postscript(stem_source: str, *, rename_all: bool) -> bool:
+    """Whether to accept fonts whose PostScript name is missing or path-unsafe."""
+    return rename_all or stem_source in STEM_SOURCES_ALLOWING_INVALID_POSTSCRIPT
+
+
+def parse_filename_stem_arg(value: str) -> str:
+    """Argparse type for -N/--stem: short tokens plus aliases postscript / typographic."""
+    v = (value or "").strip().lower()
+    v = FILENAME_STEM_ALIASES.get(v, v)
+    if v not in FILENAME_STEM_CHOICES:
+        raise argparse.ArgumentTypeError(
+            f"invalid stem {value!r}; expected one of "
+            f"{', '.join(FILENAME_STEM_CHOICES)} (aliases: {', '.join(FILENAME_STEM_ALIASES)})"
+        )
+    return v
 
 # Quality scoring weights
 WEIGHT_REVISION = 400  # 40% - Font revision number
@@ -153,6 +208,10 @@ class FontMetadata:
         quality_score: Calculated quality score for prioritization (higher is better)
         typographic_family: Typographic family name (nameID 16)
         typographic_subfamily: Typographic subfamily name (nameID 17)
+        full_font_name: Full font name (nameID 4) for --stem full
+        legacy_family: Legacy family name (nameID 1) for --stem legacy
+        legacy_subfamily: Legacy subfamily name (nameID 2) for --stem legacy
+        unique_font_id: Unique font identifier (nameID 3) for --stem uid
         is_variable: Whether this font is a variable font (has fvar table)
         file_mtime: Filesystem mtime when cached (for cache invalidation; optional)
     """
@@ -181,6 +240,12 @@ class FontMetadata:
     typographic_family: Optional[str] = None
     typographic_subfamily: Optional[str] = None
 
+    # Optional stem sources (--stem full|legacy|uid)
+    full_font_name: Optional[str] = None  # nameID 4
+    legacy_family: Optional[str] = None  # nameID 1
+    legacy_subfamily: Optional[str] = None  # nameID 2
+    unique_font_id: Optional[str] = None  # nameID 3
+
     # Variable font detection
     is_variable: bool = False
 
@@ -208,6 +273,14 @@ class FontMetadata:
         # file_mtime may not exist in old cache files (then we validate by size only)
         if "file_mtime" not in data:
             data["file_mtime"] = None
+        for optional_stem_field in (
+            "full_font_name",
+            "legacy_family",
+            "legacy_subfamily",
+            "unique_font_id",
+        ):
+            if optional_stem_field not in data:
+                data[optional_stem_field] = None
         return cls(**data)
 
     def calculate_quality_score(self, fonts_in_group: List["FontMetadata"]) -> float:
@@ -666,25 +739,18 @@ def extract_metadata(
     try:
         font = TTFont(str(font_path))
 
-        # PostScript name (nameID 6)
-        name_record = font["name"].getName(6, 3, 1, 0x409)
-        ps_name = name_record.toUnicode() if name_record else ""
+        def _nw(name_id: int) -> str:
+            raw = get_name_string_unicode_fallback(font, name_id)
+            return raw.strip() if raw else ""
 
-        # Version string (nameID 5)
-        version_record = font["name"].getName(5, 3, 1, 0x409)
-        version_string = version_record.toUnicode() if version_record else ""
-
-        # Typographic Family (nameID 16)
-        family_record = font["name"].getName(16, 3, 1, 0x409)
-        typographic_family = (
-            family_record.toUnicode().strip() if family_record else None
-        )
-
-        # Typographic Subfamily (nameID 17)
-        subfamily_record = font["name"].getName(17, 3, 1, 0x409)
-        typographic_subfamily = (
-            subfamily_record.toUnicode().strip() if subfamily_record else None
-        )
+        ps_name = _nw(6)
+        version_string = _nw(5)
+        typographic_family = _nw(16) or None
+        typographic_subfamily = _nw(17) or None
+        full_font_name = _nw(4) or None
+        legacy_family = _nw(1) or None
+        legacy_subfamily = _nw(2) or None
+        unique_font_id = _nw(3) or None
 
         # head table data
         head_table = font.get("head")
@@ -735,6 +801,10 @@ def extract_metadata(
             opentype_features=opentype_features,
             typographic_family=typographic_family,
             typographic_subfamily=typographic_subfamily,
+            full_font_name=full_font_name,
+            legacy_family=legacy_family,
+            legacy_subfamily=legacy_subfamily,
+            unique_font_id=unique_font_id,
             is_variable=is_variable,
         )
     except Exception as e:
@@ -919,6 +989,27 @@ def validate_typographic_name(name: str) -> Tuple[bool, str]:
     return _validate_font_name(name, "typographic name")
 
 
+def _stem_family_pair_no_space(
+    family: Optional[str], subfamily: Optional[str]
+) -> Optional[str]:
+    """
+    Combine family + subfamily as "Family-Style" with spaces removed from each part.
+    Returns None if inputs missing or validation fails (no logging).
+    """
+    if not family or not subfamily:
+        return None
+
+    family_normalized = family.replace(" ", "")
+    subfamily_normalized = subfamily.replace(" ", "")
+
+    if not family_normalized or not subfamily_normalized:
+        return None
+
+    combined_name = f"{family_normalized}-{subfamily_normalized}"
+    is_valid, _ = validate_typographic_name(combined_name)
+    return combined_name if is_valid else None
+
+
 def generate_typographic_filename(
     typographic_family: Optional[str], typographic_subfamily: Optional[str]
 ) -> Optional[str]:
@@ -934,30 +1025,343 @@ def generate_typographic_filename(
         Normalized filename in format "Family-Style" (spaces removed),
         or None if either field is empty/None or validation fails
     """
-    if not typographic_family or not typographic_subfamily:
-        return None
-
-    # Remove all spaces from both fields
-    family_normalized = typographic_family.replace(" ", "")
-    subfamily_normalized = typographic_subfamily.replace(" ", "")
-
-    # Return None if normalization resulted in empty strings
-    if not family_normalized or not subfamily_normalized:
-        return None
-
-    # Combine as "Family-Style"
-    combined_name = f"{family_normalized}-{subfamily_normalized}"
-
-    # Validate the combined name
-    is_valid, reason = validate_typographic_name(combined_name)
-    if not is_valid:
+    combined = _stem_family_pair_no_space(typographic_family, typographic_subfamily)
+    if (
+        combined is None
+        and typographic_family
+        and typographic_subfamily
+        and typographic_family.replace(" ", "")
+        and typographic_subfamily.replace(" ", "")
+    ):
+        family_normalized = typographic_family.replace(" ", "")
+        subfamily_normalized = typographic_subfamily.replace(" ", "")
+        probe = f"{family_normalized}-{subfamily_normalized}"
+        _, reason = validate_typographic_name(probe)
         if console:
             cs.StatusIndicator("warning").with_explanation(
                 f"Typographic name validation failed: {reason}. Using PostScript name instead."
             ).emit()
-        return None
+    return combined
 
-    return combined_name
+
+def stem_from_full_font_name(full_font_name: Optional[str]) -> Optional[str]:
+    """nameID 4 as filename stem (spaces / underscores collapsed to single hyphens)."""
+    if not full_font_name or not full_font_name.strip():
+        return None
+    candidate = full_font_name.strip()
+    candidate = re.sub(r"[\s_]+", "-", candidate)
+    candidate = re.sub(r"-{2,}", "-", candidate).strip("-")
+    if not candidate:
+        return None
+    is_valid, _ = _validate_font_name(candidate, context="full font name")
+    return candidate if is_valid else None
+
+
+def stem_from_unique_font_id(unique_id: Optional[str]) -> Optional[str]:
+    """nameID 3 sanitized with FontCore PostScript rules, then validated for paths."""
+    if not unique_id or not unique_id.strip():
+        return None
+    candidate = sanitize_postscript(unique_id.strip())
+    is_valid, _ = _validate_font_name(candidate, context="unique font ID")
+    return candidate if is_valid else None
+
+
+# --- "Best" stem: weak / placeholder detection (order: typo → ps → uid → full → legacy → original) ---
+
+_WEAK_PLACEHOLDER_TOKENS = frozenset(
+    {
+        "",
+        ".",
+        "..",
+        "-",
+        "_",
+        "?",
+        "??",
+        "???",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "unknown",
+        "font",
+        "name",
+        "test",
+        "placeholder",
+        "tbd",
+        "foo",
+        "bar",
+        "xxx",
+        "aaa",
+        "abc",
+    }
+)
+
+
+def _latin_letters(s: str) -> str:
+    return "".join(c.lower() for c in s if c.isalpha())
+
+
+def _looks_like_gibberish_latin(s: str) -> bool:
+    """Heuristic: long Latin letter run with no vowels (e.g. random consonant clusters)."""
+    letters = _latin_letters(s)
+    if len(letters) < 5:
+        return False
+    vowels = frozenset("aeiouy")
+    if any(c in vowels for c in letters):
+        return False
+    return True
+
+
+def is_placeholder_name_fragment(s: Optional[str]) -> bool:
+    """
+    True if a raw name-table fragment is empty, whitespace-only, too short, or an obvious placeholder.
+    Used before combining family/subfamily or accepting PostScript / full-name strings.
+    """
+    if s is None:
+        return True
+    t = s.strip()
+    if not t:
+        return True
+    if len(t) <= 1:
+        return True
+    tl = t.lower()
+    if tl in _WEAK_PLACEHOLDER_TOKENS:
+        return True
+    if len(set(tl.replace(" ", ""))) == 1:
+        return True
+    return False
+
+
+def is_placeholder_or_gibberish_stem(stem: str) -> bool:
+    """True if a candidate filesystem stem is degenerate or junk after normalization."""
+    if not stem or not stem.strip():
+        return True
+    t = stem.strip()
+    if len(t) <= 1:
+        return True
+    tl = t.lower()
+    if tl in _WEAK_PLACEHOLDER_TOKENS:
+        return True
+    if len(set(tl)) == 1:
+        return True
+    letter_run = _latin_letters(t)
+    if len(letter_run) >= 5 and _looks_like_gibberish_latin(t):
+        return True
+    return False
+
+
+def _pick_best_stem_and_tier(
+    meta: FontMetadata, force_family: Optional[str]
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    First acceptable stem with tier tag: typo → ps → uid → full → legacy.
+    Returns (None, None) if caller should keep the original basename.
+    """
+    fam = force_family or meta.typographic_family
+    if not is_placeholder_name_fragment(fam) and not is_placeholder_name_fragment(
+        meta.typographic_subfamily
+    ):
+        typo = _stem_family_pair_no_space(fam, meta.typographic_subfamily)
+        if typo and not is_placeholder_or_gibberish_stem(typo):
+            return typo, "typo"
+
+    ps = (meta.ps_name or "").strip()
+    if not is_placeholder_name_fragment(ps):
+        ok, _ = is_valid_postscript_name(ps)
+        if ok and not is_placeholder_or_gibberish_stem(ps):
+            return ps, "ps"
+
+    uid_stem = stem_from_unique_font_id(meta.unique_font_id)
+    if uid_stem and not is_placeholder_or_gibberish_stem(uid_stem):
+        return uid_stem, "uid"
+
+    full_stem = stem_from_full_font_name(meta.full_font_name)
+    if full_stem and not is_placeholder_or_gibberish_stem(full_stem):
+        return full_stem, "full"
+
+    if not is_placeholder_name_fragment(meta.legacy_family) and not is_placeholder_name_fragment(
+        meta.legacy_subfamily
+    ):
+        legacy = _stem_family_pair_no_space(meta.legacy_family, meta.legacy_subfamily)
+        if legacy and not is_placeholder_or_gibberish_stem(legacy):
+            return legacy, "legacy"
+
+    return None, None
+
+
+def _pick_best_filesystem_stem(
+    meta: FontMetadata, force_family: Optional[str]
+) -> Optional[str]:
+    """
+    First acceptable stem in order: typo → ps → uid → full → legacy.
+    Returns None if none qualify (caller keeps original filename).
+    Does not emit typographic validation warnings (silent probes).
+    """
+    stem, _tier = _pick_best_stem_and_tier(meta, force_family)
+    return stem
+
+
+def describe_preview_stem_method(
+    meta: FontMetadata, stem_source: str, force_family: Optional[str]
+) -> str:
+    """
+    Short label for preview table: which name-table source drove the rename target.
+    """
+    if stem_source == FILENAME_STEM_BEST:
+        _, tier = _pick_best_stem_and_tier(meta, force_family)
+        if tier is None:
+            return "Keep filename"
+        return {
+            "typo": "Typographic (16+17)",
+            "ps": "PostScript (6)",
+            "uid": "Unique ID (3)",
+            "full": "Full name (4)",
+            "legacy": "Legacy (1+2)",
+        }[tier]
+
+    if stem_source == FILENAME_STEM_POSTSCRIPT:
+        return "PostScript (6)"
+
+    if stem_source == FILENAME_STEM_TYPOGRAPHIC:
+        fam = force_family or meta.typographic_family
+        if _stem_family_pair_no_space(fam, meta.typographic_subfamily):
+            return "Typographic (16+17)"
+        if _usable_postscript_stem(meta):
+            return "Typographic→PostScript (6)"
+        if _fallback_stem_original_basename(meta):
+            return "Typographic→filename stem"
+        return "Typographic→PostScript (6)"
+
+    if stem_source == FILENAME_STEM_LEGACY:
+        if _stem_family_pair_no_space(meta.legacy_family, meta.legacy_subfamily):
+            return "Legacy (1+2)"
+        if _usable_postscript_stem(meta):
+            return "Legacy→PostScript (6)"
+        if _fallback_stem_original_basename(meta):
+            return "Legacy→filename stem"
+        return "Legacy→PostScript (6)"
+
+    if stem_source == FILENAME_STEM_FULL:
+        if stem_from_full_font_name(meta.full_font_name):
+            return "Full name (4)"
+        if _usable_postscript_stem(meta):
+            return "Full→PostScript (6)"
+        if _fallback_stem_original_basename(meta):
+            return "Full→filename stem"
+        return "Full→PostScript (6)"
+
+    if stem_source == FILENAME_STEM_UNIQUE:
+        if stem_from_unique_font_id(meta.unique_font_id):
+            return "Unique ID (3)"
+        if _usable_postscript_stem(meta):
+            return "UID→PostScript (6)"
+        if _fallback_stem_original_basename(meta):
+            return "UID→filename stem"
+        return "UID→PostScript (6)"
+
+    return stem_source
+
+
+class RenameStemResolution(NamedTuple):
+    """Resolved target for one font in assign_final_names."""
+
+    use_original_filename: bool
+    stem: str
+    original_basename: str
+
+
+def _usable_postscript_stem(meta: FontMetadata) -> Optional[str]:
+    ps = (meta.ps_name or "").strip()
+    if not ps:
+        return None
+    ok, _ = is_valid_postscript_name(ps)
+    return ps if ok else None
+
+
+def _fallback_stem_original_basename(meta: FontMetadata) -> Optional[str]:
+    """Stem of the incoming filename when name-table fallbacks are empty or junk."""
+    name = meta.original_filename or Path(meta.file_path).name
+    stem = Path(name).stem
+    if not stem.strip():
+        return None
+    ok, _ = _validate_font_name(stem, context="filename stem")
+    return stem if ok else None
+
+
+def _stem_after_optional_primary(
+    primary: Optional[str], meta: FontMetadata
+) -> str:
+    """Prefer primary stem, then usable PostScript, then originating filename stem, then raw ps."""
+    if primary and primary.strip():
+        return primary.strip()
+    ps = _usable_postscript_stem(meta)
+    if ps:
+        return ps
+    orig = _fallback_stem_original_basename(meta)
+    if orig:
+        return orig
+    return (meta.ps_name or "").strip()
+
+
+def resolve_renamer_stem(
+    meta: FontMetadata, stem_source: str, force_family: Optional[str]
+) -> RenameStemResolution:
+    """
+    Resolve stem policy to either a filesystem stem or keeping the original basename.
+    """
+    if stem_source == FILENAME_STEM_BEST:
+        picked = _pick_best_filesystem_stem(meta, force_family)
+        ob = meta.original_filename or Path(meta.file_path).name
+        if picked is None:
+            return RenameStemResolution(True, "", ob)
+        return RenameStemResolution(False, picked, "")
+
+    stem = effective_filename_stem(meta, stem_source, force_family)
+    return RenameStemResolution(False, stem, "")
+
+
+def effective_filename_stem(
+    meta: FontMetadata,
+    stem_source: str,
+    force_family: Optional[str],
+) -> str:
+    """
+    Resolve filesystem stem from metadata and stem policy.
+
+    After the chosen name-table source (or best pick), falls back in order: usable
+    PostScript (6), stem of the originating filename, then raw ps_name.
+
+    Reads name strings via ``get_name_string_unicode_fallback`` (Windows US first, then
+    other platforms; placeholder Windows values are ignored when Mac records are good).
+    """
+    if stem_source == FILENAME_STEM_POSTSCRIPT:
+        return meta.ps_name
+
+    if stem_source == FILENAME_STEM_TYPOGRAPHIC:
+        fam = force_family or meta.typographic_family
+        t = _stem_family_pair_no_space(fam, meta.typographic_subfamily)
+        if t:
+            return t
+        typo = generate_typographic_filename(fam, meta.typographic_subfamily)
+        return _stem_after_optional_primary(typo, meta)
+
+    if stem_source == FILENAME_STEM_LEGACY:
+        leg = _stem_family_pair_no_space(meta.legacy_family, meta.legacy_subfamily)
+        return _stem_after_optional_primary(leg, meta)
+
+    if stem_source == FILENAME_STEM_FULL:
+        full = stem_from_full_font_name(meta.full_font_name)
+        return _stem_after_optional_primary(full, meta)
+
+    if stem_source == FILENAME_STEM_UNIQUE:
+        uid = stem_from_unique_font_id(meta.unique_font_id)
+        return _stem_after_optional_primary(uid, meta)
+
+    if stem_source == FILENAME_STEM_BEST:
+        picked = _pick_best_filesystem_stem(meta, force_family)
+        return _stem_after_optional_primary(picked, meta)
+
+    return meta.ps_name
 
 
 # ============================================================================
@@ -1112,114 +1516,125 @@ def rename_to_temp(font_files: List[Path], dry_run: bool = False) -> Dict[Path, 
 
 def assign_final_names(
     ps_name_groups: Dict[str, List[FontMetadata]],
-    use_typographic_names: bool = False,
+    stem_source: str = DEFAULT_FILENAME_STEM,
     force_family: Optional[str] = None,
 ) -> Dict[Path, str]:
     """
-    Assign final names based on PostScript name or typographic names and quality score.
+    Assign final names based on stem policy (OpenType name table) and quality score.
     Highest quality gets clean name, others get ~001, ~002, etc.
-    Uses normalized paths for consistent mapping.
 
     Variable font conflict resolution:
     - Static and variable fonts with the same PostScript name are processed separately.
-    - Static fonts get the base name (e.g. Family-Style.otf); duplicates get ~001, ~002.
-    - Variable fonts get the same base name when the group has only variable fonts.
+    - Static fonts get the base stem (e.g. Family-Style.otf); duplicates get ~001, ~002.
+    - Variable fonts get the same base stem when the group has only variable fonts.
     - When both static and variable exist in the group, variable fonts get a "-Variable"
-      suffix (e.g. Family-Style-Variable.otf) so both can coexist without collision.
-    - Suffix format ~001..~999 is used for duplicate base names within each subgroup;
-      subgroups larger than 999 use ~1000, ~1001, etc. (no hard cap).
+      suffix so both can coexist without collision.
+
+    Stem ``best`` (--stem best): per font, first acceptable typo → PostScript → uid → full →
+    legacy; filters placeholders/gibberish; keeps the original basename if none qualify.
 
     Args:
-        ps_name_groups: Fonts grouped by PostScript name and format
-        use_typographic_names: If True, use nameID 16/17 for filenames when available
-        force_family: Optional family override to use instead of extracted nameID 16
+        ps_name_groups: Fonts grouped by PostScript name (nameID 6) and format
+        stem_source: One of FILENAME_STEM_* (CLI: --stem / -N)
+        force_family: Optional family override for typographic stems (nameID 16); see --force-family
     """
     rename_map: Dict[Path, str] = {}
-    typographic_used_count = 0
-    postscript_fallback_count = 0
+    stem_preferred_groups = 0
+    stem_fallback_groups = 0
+    best_derived = 0
+    best_kept_original = 0
 
     for group_key, metadata_list in ps_name_groups.items():
-        # Use quality-based sorting
+        pick_cache: Dict[int, RenameStemResolution] = {}
+
+        def _resolution(meta: FontMetadata) -> RenameStemResolution:
+            i = id(meta)
+            if i not in pick_cache:
+                pick_cache[i] = resolve_renamer_stem(meta, stem_source, force_family)
+            return pick_cache[i]
+
         sorted_fonts = sort_by_quality_score(metadata_list)
 
-        # Separate static and variable fonts
         static_fonts = [f for f in sorted_fonts if not f.is_variable]
         variable_fonts = [f for f in sorted_fonts if f.is_variable]
         has_conflict = len(static_fonts) > 0 and len(variable_fonts) > 0
 
-        # Determine base name for this group
-        base_name = None
-        if use_typographic_names:
-            # Try to use typographic name from highest quality font
-            top_font = sorted_fonts[0]
-            typo_name = generate_typographic_filename(
-                force_family or top_font.typographic_family,
-                top_font.typographic_subfamily,
-            )
-            if typo_name:
-                base_name = typo_name
-                typographic_used_count += 1
+        top_font = sorted_fonts[0]
 
-        # Fall back to PostScript name if typographic name not available
-        if base_name is None:
-            base_name = sorted_fonts[0].ps_name
-            if use_typographic_names:
-                postscript_fallback_count += 1
-
-        # When use_typographic_names is True, fonts are grouped by PostScript name
-        # (e.g. blank ID6 puts all in one group). Add ~### only for actual duplicates
-        # of the same target base name; otherwise every font after the first got a counter.
-        def _effective_base_name(meta: FontMetadata, default: str) -> str:
-            if use_typographic_names:
-                typo_name = generate_typographic_filename(
-                    force_family or meta.typographic_family,
-                    meta.typographic_subfamily,
-                )
-                return typo_name if typo_name else meta.ps_name
-            return default
+        if stem_source != FILENAME_STEM_POSTSCRIPT and stem_source != FILENAME_STEM_BEST:
+            top_r = _resolution(top_font)
+            if not top_r.use_original_filename and top_r.stem != top_font.ps_name:
+                stem_preferred_groups += 1
+            else:
+                stem_fallback_groups += 1
 
         def _assign_names(
             fonts: List[FontMetadata],
             variable_suffix: str,
         ) -> None:
-            # Subgroup by effective target base name so ~### is only used for real duplicates
-            subgroups: Dict[str, List[FontMetadata]] = {}
+            nonlocal best_derived, best_kept_original
+            subgroups: Dict[Tuple[Any, ...], List[FontMetadata]] = {}
             for meta in fonts:
-                font_base = _effective_base_name(meta, base_name)
-                key = f"{font_base}{variable_suffix}"
-                if key not in subgroups:
-                    subgroups[key] = []
-                subgroups[key].append(meta)
-            for _key, sublist in subgroups.items():
+                r = _resolution(meta)
+                eff_var = "" if r.use_original_filename else variable_suffix
+                if r.use_original_filename:
+                    sub_key = ("orig", r.original_basename, eff_var)
+                else:
+                    sub_key = ("stem", r.stem, eff_var)
+                if sub_key not in subgroups:
+                    subgroups[sub_key] = []
+                subgroups[sub_key].append(meta)
+
+            for sub_key, sublist in subgroups.items():
+                kind = sub_key[0]
                 for idx, meta in enumerate(sublist):
                     original_path = normalize_path(Path(meta.file_path))
-                    if meta.detected_format:
-                        ext = f".{meta.detected_format}"
+                    if kind == "orig":
+                        ob = str(sub_key[1])
+                        if idx == 0:
+                            new_name = ob
+                        else:
+                            p = Path(ob)
+                            new_name = f"{p.stem}~{idx:03d}{p.suffix}"
                     else:
-                        ext = Path(meta.file_path).suffix.lower()
-                    font_base_name = _effective_base_name(meta, base_name)
-                    if idx == 0:
-                        new_name = f"{font_base_name}{variable_suffix}{ext}"
-                    else:
-                        new_name = f"{font_base_name}{variable_suffix}~{idx:03d}{ext}"
+                        stem = str(sub_key[1])
+                        eff_var = str(sub_key[2])
+                        if meta.detected_format:
+                            ext = f".{meta.detected_format}"
+                        else:
+                            ext = Path(meta.file_path).suffix.lower()
+                        if idx == 0:
+                            new_name = f"{stem}{eff_var}{ext}"
+                        else:
+                            new_name = f"{stem}{eff_var}~{idx:03d}{ext}"
+                    if stem_source == FILENAME_STEM_BEST:
+                        if kind == "orig":
+                            best_kept_original += 1
+                        else:
+                            best_derived += 1
                     rename_map[original_path] = new_name
 
-        # Process static fonts (get clean name; ~### only when same typographic name)
         _assign_names(static_fonts, "")
 
-        # Process variable fonts (-Variable when conflict with static; ~### only for duplicates)
         var_suffix = "-Variable" if has_conflict else ""
         _assign_names(variable_fonts, var_suffix)
 
-    # Log typographic name usage if enabled
-    if (
-        use_typographic_names
-        and console
-        and (typographic_used_count > 0 or postscript_fallback_count > 0)
+    if stem_source == FILENAME_STEM_BEST and console and (
+        best_derived > 0 or best_kept_original > 0
     ):
         cs.StatusIndicator("info").add_message(
-            f"Typographic names used: {typographic_used_count}, "
-            f"PostScript fallback: {postscript_fallback_count}"
+            f"Stem 'best': name-table stem: {best_derived} file(s); "
+            f"kept original filename: {best_kept_original} file(s)"
+        ).emit()
+    elif (
+        stem_source not in (FILENAME_STEM_POSTSCRIPT, FILENAME_STEM_BEST)
+        and console
+        and (stem_preferred_groups > 0 or stem_fallback_groups > 0)
+    ):
+        cs.StatusIndicator("info").add_message(
+            f"Stem '{stem_source}' (non-ID6 preferred): "
+            f"{stem_preferred_groups} group(s), "
+            f"PostScript fallback: {stem_fallback_groups} group(s)"
         ).emit()
 
     return rename_map
@@ -1428,8 +1843,9 @@ def process_single_font_metadata(
     original_path: Path,
     cache: Dict[str, FontMetadata],
     rename_all: bool,
-    dry_run: bool,
-    verbose: bool,
+    stem_source: str = DEFAULT_FILENAME_STEM,
+    dry_run: bool = False,
+    verbose: bool = False,
 ) -> Optional[FontMetadata]:
     """
     Extract and validate metadata for a single font.
@@ -1470,15 +1886,17 @@ def process_single_font_metadata(
 
     metadata.original_filename = original_name
 
-    # Validate PostScript name
-    is_valid, reason = is_valid_postscript_name(metadata.ps_name)
-    if not is_valid and not rename_all:
-        if console and verbose:
-            cs.StatusIndicator("warning").add_file(
-                original_name, filename_only=True
-            ).with_explanation(f"Skipping: {reason}").emit()
-        restore_temp_file(temp_path, original_path, dry_run)
-        return None
+    # Validate PostScript name unless policy can rename without it (see stem_mode_allows_missing_postscript).
+    allow_invalid_ps = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
+    if not allow_invalid_ps:
+        is_valid, reason = is_valid_postscript_name(metadata.ps_name)
+        if not is_valid:
+            if console and verbose:
+                cs.StatusIndicator("warning").add_file(
+                    original_name, filename_only=True
+                ).with_explanation(f"Skipping: {reason}").emit()
+            restore_temp_file(temp_path, original_path, dry_run)
+            return None
 
     return metadata
 
@@ -1569,6 +1987,7 @@ def _process_extracted_metadata(
     metadata: Optional[FontMetadata],
     cache: Dict[str, FontMetadata],
     rename_all: bool,
+    stem_source: str,
     dry_run: bool,
     verbose: bool,
     stats: RenameStats,
@@ -1585,14 +2004,16 @@ def _process_extracted_metadata(
         restore_temp_file(temp_path, original_path, dry_run)
         return
     metadata.original_filename = original_name
-    is_valid, reason = is_valid_postscript_name(metadata.ps_name)
-    if not is_valid and not rename_all:
-        if console and verbose:
-            cs.StatusIndicator("warning").add_file(
-                original_name, filename_only=True
-            ).with_explanation(f"Skipping: {reason}").emit()
-        restore_temp_file(temp_path, original_path, dry_run)
-        return
+    allow_invalid_ps = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
+    if not allow_invalid_ps:
+        is_valid, reason = is_valid_postscript_name(metadata.ps_name)
+        if not is_valid:
+            if console and verbose:
+                cs.StatusIndicator("warning").add_file(
+                    original_name, filename_only=True
+                ).with_explanation(f"Skipping: {reason}").emit()
+            restore_temp_file(temp_path, original_path, dry_run)
+            return
     font_metadata[temp_path] = metadata
     cache[original_name] = metadata
 
@@ -1601,6 +2022,7 @@ def _extract_and_group_metadata(
     temp_mapping: Dict[Path, Path],
     cache: Dict[str, FontMetadata],
     rename_all: bool,
+    stem_source: str,
     dry_run: bool,
     verbose: bool,
     stats: RenameStats,
@@ -1646,6 +2068,7 @@ def _extract_and_group_metadata(
             meta,
             cache,
             rename_all,
+            stem_source,
             dry_run,
             verbose,
             stats,
@@ -1688,6 +2111,7 @@ def _extract_and_group_metadata(
                 meta,
                 cache,
                 rename_all,
+                stem_source,
                 dry_run,
                 verbose,
                 stats,
@@ -1757,7 +2181,7 @@ def process_directory(
     rename_all: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
-    use_typographic_names: bool = False,
+    stem_source: str = DEFAULT_FILENAME_STEM,
     force_family: Optional[str] = None,
     specific_files: Optional[List[Path]] = None,
     show_progress: bool = True,
@@ -1782,6 +2206,7 @@ def process_directory(
             temp_mapping,
             cache,
             rename_all,
+            stem_source,
             dry_run,
             verbose,
             stats,
@@ -1796,7 +2221,7 @@ def process_directory(
 
         rename_map = assign_final_names(
             ps_name_groups,
-            use_typographic_names=use_typographic_names,
+            stem_source=stem_source,
             force_family=force_family,
         )
 
@@ -1841,6 +2266,7 @@ class RenamePreview:
     original_name: str
     new_name: str
     ps_name: str
+    stem_method: str
     priority: int
     quality_score: float = 0.0
     metadata: Optional[FontMetadata] = None
@@ -1877,7 +2303,7 @@ def _group_metadata_for_preview(
 def analyze_renames(
     font_paths: List[str],
     rename_all: bool = False,
-    use_typographic_names: bool = False,
+    stem_source: str = DEFAULT_FILENAME_STEM,
     force_family: Optional[str] = None,
     show_progress: bool = True,
 ) -> Dict[str, List[RenamePreview]]:
@@ -1902,9 +2328,11 @@ def analyze_renames(
                 need_extract.append(font_path)
 
         for font_path, metadata in cached_pairs:
-            is_valid, _ = is_valid_postscript_name(metadata.ps_name)
-            if not is_valid and not rename_all:
-                continue
+            skip_ps_check = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
+            if not skip_ps_check:
+                is_valid, _ = is_valid_postscript_name(metadata.ps_name)
+                if not is_valid:
+                    continue
             metadata.original_filename = font_path.name
             font_metadata[font_path] = metadata
 
@@ -1929,9 +2357,11 @@ def analyze_renames(
             for font_path, metadata in zip(need_extract, extracted):
                 if metadata is None:
                     continue
-                is_valid, _ = is_valid_postscript_name(metadata.ps_name)
-                if not is_valid and not rename_all:
-                    continue
+                skip_ps_check = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
+                if not skip_ps_check:
+                    is_valid, _ = is_valid_postscript_name(metadata.ps_name)
+                    if not is_valid:
+                        continue
                 metadata.original_filename = font_path.name
                 font_metadata[font_path] = metadata
                 cache[font_path.name] = metadata
@@ -1946,7 +2376,7 @@ def analyze_renames(
         # Since metadata objects are shared, scores are set on the objects in font_metadata
         rename_map = assign_final_names(
             ps_name_groups,
-            use_typographic_names=use_typographic_names,
+            stem_source=stem_source,
             force_family=force_family,
         )
 
@@ -1981,6 +2411,9 @@ def analyze_renames(
                     original_name=original_path.name,
                     new_name=new_name,
                     ps_name=ps_name,
+                    stem_method=describe_preview_stem_method(
+                        meta, stem_source, force_family
+                    ),
                     priority=priority,
                     quality_score=meta.quality_score or 0.0,
                     metadata=meta,
@@ -2088,6 +2521,7 @@ def show_preflight_preview(
         if table:
             table.add_column("Original Name", style="lighttext", no_wrap=False)
             table.add_column("New Name", style="lighttext", no_wrap=False)
+            table.add_column("Method", style="cyan", no_wrap=False, width=26)
 
             if show_quality:
                 table.add_column("Quality", style="cyan", justify="right", width=8)
@@ -2113,13 +2547,18 @@ def show_preflight_preview(
                         table.add_row(
                             highlighted_orig,
                             highlighted_new,
+                            preview.stem_method,
                             f"{meta.quality_score:.0f}",
                             f"{meta.font_revision:.2f}",
                             format_language_support(meta.language_support),
                             f"{len(meta.opentype_features)}",
                         )
                     else:
-                        table.add_row(highlighted_orig, highlighted_new)
+                        table.add_row(
+                            highlighted_orig,
+                            highlighted_new,
+                            preview.stem_method,
+                        )
 
                 # Show quality explanations if requested
                 if explain_quality and show_quality:
@@ -2170,7 +2609,10 @@ def show_preflight_preview(
     else:
         for dir_path, previews in sorted(previews_by_dir.items()):
             for preview in sorted(previews, key=lambda p: p.original_name):
-                cs.emit(f"{cs.indent(1)}{preview.original_name} -> {preview.new_name}")
+                cs.emit(
+                    f"{cs.indent(1)}{preview.original_name} -> {preview.new_name} "
+                    f" ({preview.stem_method})"
+                )
 
     cs.emit("")
 
@@ -2302,7 +2744,7 @@ def main():
     if current_process().name != "MainProcess":
         return 0
     parser = argparse.ArgumentParser(
-        description="Rename font files to PostScript names with intelligent quality scoring",
+        description="Rename font files using OpenType name-table data and quality-aware deduplication",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -2310,6 +2752,9 @@ Examples:
   %(prog)s font1.otf font2.otf         # Rename specific files
   %(prog)s /fonts/ -r         # Process directory recursively
   %(prog)s /fonts/ -n           # Preview changes
+  %(prog)s /fonts/ -N typo      # Filenames from nameID 16+17 (typographic)
+  %(prog)s /fonts/ -N full        # Filenames from nameID 4 (full name)
+  %(prog)s /fonts/ -N best        # Best per-file name table pick; else keep filename
   %(prog)s /fonts/ --show-quality  # Show quality scores in preview
         """,
     )
@@ -2356,9 +2801,27 @@ Examples:
         help="Display quality scores and details in preview",
     )
     parser.add_argument(
+        "-N",
+        "--stem",
+        dest="stem",
+        type=parse_filename_stem_arg,
+        default=FILENAME_STEM_POSTSCRIPT,
+        metavar="MODE",
+        help=(
+            "Filename stem: "
+            "ps=nameID 6 (default); "
+            "typo=16+17 typographic; "
+            "full=4 full font name (spaces stripped); "
+            "legacy=1+2 legacy family/style; "
+            "uid=nameID 3 (FontCore sanitize_postscript); "
+            "best=per-file typo→ps→uid→full→legacy, else keep original name. "
+            "Aliases: postscript→ps, typographic→typo."
+        ),
+    )
+    parser.add_argument(
         "--use-typographic-names",
         action="store_true",
-        help="Use nameID 16 (Family) and 17 (Style) for filenames instead of PostScript names",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--explain-quality",
@@ -2369,7 +2832,10 @@ Examples:
         "-ff",
         "--force-family",
         type=str,
-        help="Override extracted typographic family (nameID 16) with this value when generating typographic filenames",
+        help=(
+            "Override typographic family (nameID 16) when using --stem typo; "
+            "ignored for other stems"
+        ),
     )
     parser.add_argument(
         "--recover",
@@ -2378,6 +2844,13 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    if args.use_typographic_names:
+        if args.stem != FILENAME_STEM_POSTSCRIPT:
+            parser.error(
+                "--use-typographic-names cannot be combined with -N/--stem; use '-N typo'"
+            )
+        args.stem = FILENAME_STEM_TYPOGRAPHIC
 
     if args.force_family is not None:
         args.force_family = args.force_family.strip()
@@ -2457,6 +2930,7 @@ Examples:
         mode = "RENAME"
         cs.print_panel(
             f"Mode: {mode}\n"
+            f"Stem (-N/--stem): {args.stem}\n"
             f"Files: {cs.fmt_count(len(font_paths))}\n"
             f"Directories: {cs.fmt_count(len(dirs_to_process))}",
             title="Font File Renamer (Quality-Aware)",
@@ -2467,7 +2941,7 @@ Examples:
         previews_by_dir = analyze_renames(
             font_paths,
             rename_all=args.rename_all,
-            use_typographic_names=args.use_typographic_names,
+            stem_source=args.stem,
             force_family=args.force_family,
             show_progress=not args.no_progress,
         )
@@ -2512,7 +2986,7 @@ Examples:
             rename_all=args.rename_all,
             dry_run=args.dry_run,
             verbose=args.verbose,
-            use_typographic_names=args.use_typographic_names,
+            stem_source=args.stem,
             force_family=args.force_family,
             specific_files=specific_files,
             show_progress=not args.no_progress,
