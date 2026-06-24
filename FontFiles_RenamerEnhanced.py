@@ -83,6 +83,12 @@ from FontCore.core_name_policies import (  # noqa: E402
     get_name_string_unicode_fallback,
     sanitize_postscript,
 )
+from FontCore.core_variable_filename_parser import (  # noqa: E402
+    filename_has_variable_marker,
+    format_variable_filename,
+    parse_variable_filename,
+    slots_usable_for_policy,
+)
 
 console = cs.get_console()
 
@@ -1303,6 +1309,17 @@ def _stem_after_optional_primary(
     return (meta.ps_name or "").strip()
 
 
+def _variable_aligned_stem(meta: FontMetadata, stem: str) -> str:
+    """Normalize variable-font stems to static-aligned ``Family-WidthVariable`` form."""
+    if not meta.is_variable:
+        return stem
+    basename = meta.original_filename or Path(meta.file_path).name
+    slots = parse_variable_filename(basename, strip_extension=True)
+    if slots_usable_for_policy(slots):
+        return format_variable_filename(slots)
+    return stem
+
+
 def resolve_renamer_stem(
     meta: FontMetadata, stem_source: str, force_family: Optional[str]
 ) -> RenameStemResolution:
@@ -1314,10 +1331,10 @@ def resolve_renamer_stem(
         ob = meta.original_filename or Path(meta.file_path).name
         if picked is None:
             return RenameStemResolution(True, "", ob)
-        return RenameStemResolution(False, picked, "")
+        return RenameStemResolution(False, _variable_aligned_stem(meta, picked), "")
 
     stem = effective_filename_stem(meta, stem_source, force_family)
-    return RenameStemResolution(False, stem, "")
+    return RenameStemResolution(False, _variable_aligned_stem(meta, stem), "")
 
 
 def effective_filename_stem(
@@ -1616,8 +1633,16 @@ def assign_final_names(
 
         _assign_names(static_fonts, "")
 
-        var_suffix = "-Variable" if has_conflict else ""
-        _assign_names(variable_fonts, var_suffix)
+        def _variable_suffix_for_group(fonts: List[FontMetadata]) -> str:
+            if not has_conflict:
+                return ""
+            for meta in fonts:
+                r = _resolution(meta)
+                if not r.use_original_filename and filename_has_variable_marker(r.stem):
+                    return ""
+            return "-Variable"
+
+        _assign_names(variable_fonts, _variable_suffix_for_group(variable_fonts))
 
     if stem_source == FILENAME_STEM_BEST and console and (
         best_derived > 0 or best_kept_original > 0
