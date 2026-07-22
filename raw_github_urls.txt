@@ -1,7 +1,6 @@
 # Root directory
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/.gitmodules
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/.metrics_checkpoint.json
-https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontCore
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Byte_Comparator.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Organizer.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_OrganizerEnhanced.py
@@ -33,11 +32,14 @@ https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_font_style_dicti
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_font_utils.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_gpos_repair.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_logging_config.py
+https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_metadata_catalog.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_name_attribution.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_name_policies.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_nameid_allocator.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_nameid_replacer_base.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_namerecord_matcher.py
+https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_namerecord_writer.py
+https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_ot_label_reflow.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_ot_label_scanner.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_stat_builder.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_string_utils.py
@@ -47,6 +49,8 @@ https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_variable_font_de
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/requirements.txt
 # FontCore/tests/
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/tests/__init__.py
+https://raw.githubusercontent.com/andrewsipe/FontCore/main/tests/test_metadata_catalog.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/tests/test_name_attribution.py
+https://raw.githubusercontent.com/andrewsipe/FontCore/main/tests/test_namerecord_writer.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/tests/test_preserve_low_nameids.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/tests/test_variable_name_policies.py
