@@ -1,7 +1,6 @@
 # Root directory
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/.gitmodules
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/.metrics_checkpoint.json
-https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontCore
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Byte_Comparator.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_Organizer.py
 https://raw.githubusercontent.com/andrewsipe/FileRenamer/main/FontFiles_OrganizerEnhanced.py
@@ -42,6 +41,7 @@ https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_namerecord_match
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_namerecord_writer.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_ot_label_reflow.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_ot_label_scanner.py
+https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_ot_label_suggest.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_stat_builder.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_string_utils.py
 https://raw.githubusercontent.com/andrewsipe/FontCore/main/core_ttx_table_io.py

@@ -66,8 +66,7 @@ from FontCore.core_font_utils import (
     sanitize_folder_name,
 )
 
-# Import from FontFiles_Renamer
-from FontFiles_Renamer import sort_by_version_priority
+from version_priority import sort_by_version_priority
 
 console = cs.get_console()
 

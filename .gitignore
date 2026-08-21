@@ -82,3 +82,5 @@ Desktop.ini
 # Font processing temporary files
 *.ttx.tmp
 temp_font_metadata.tmp
+.metrics_checkpoint.json
+*.metrics_checkpoint.json
