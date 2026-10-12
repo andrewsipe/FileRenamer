@@ -30,3 +30,14 @@ python FontFiles_SHA256_Deduplicator.py /path/to/fonts -R --dry-run
 
 - [Filename_Tools](https://github.com/andrewsipe/Filename_Tools) — clean/normalize filenames before renaming
 - [FontNameID](https://github.com/andrewsipe/FontNameID) — update PostScript / name-table metadata
+
+## FontCore dependency
+
+This tool imports the shared [`FontCore`](https://github.com/andrewsipe/FontCore) package (`import FontCore…`). It is **not** vendored or a submodule here. On a fresh machine:
+
+```bash
+git clone https://github.com/andrewsipe/FontCore.git ../FontCore
+python3 -m pip install -e ../FontCore
+```
+
+(In the author's monorepo checkout, `./FontCore` is a local symlink to `../FontCore/src/FontCore`; it is git-ignored.)

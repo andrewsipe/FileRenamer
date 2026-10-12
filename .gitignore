@@ -84,3 +84,6 @@ Desktop.ini
 temp_font_metadata.tmp
 .metrics_checkpoint.json
 *.metrics_checkpoint.json
+
+# Local dev symlink to ../FontCore/src/FontCore (see README: FontCore dependency)
+/FontCore
