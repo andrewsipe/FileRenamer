@@ -58,3 +58,10 @@ If you delete the `_misc` backup later, keep at least:
 1. This file.
 2. `version_priority.py` (or fold it into FontCore with tests).
 3. Awareness that archived base renamer ≠ Enhanced quality model.
+
+## Packaging pass (2026-11-20)
+
+- Package `fontrenamer/` (renamer, organizer, deduper, version_priority); commands `fontrenamer`, `fontorganizer`, `fontdeduper`.
+- Byte_Comparator and Variation_Analyzer retired (git history keeps them).
+- Organizer/deduper may later split into their own projects; they are independent modules.
+- Still open: one conflict model for rename + organize (quality score vs version priority).

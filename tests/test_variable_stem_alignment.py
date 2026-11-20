@@ -9,7 +9,7 @@ _project_root = Path(__file__).resolve().parents[2]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from FileRenamer.FontFiles_RenamerEnhanced import (  # noqa: E402
+from fontrenamer.renamer import (  # noqa: E402
     FontMetadata,
     _variable_aligned_stem,
 )

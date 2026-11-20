@@ -6,14 +6,14 @@ Collects fonts recursively, groups by superfamily/family, renames to PostScript 
 and organizes into directory structure (A-Z by default, or vendor/filename/name table based).
 
 Usage:
-    python FontFiles_Organizer.py /path/to/fonts/
-    python FontFiles_Organizer.py /path/to/fonts/ --output-dir /path/to/output/
-    python FontFiles_Organizer.py /path/to/fonts/ --dry-run
-    python FontFiles_Organizer.py /path/to/fonts/ --verbose
-    python FontFiles_Organizer.py /path/to/fonts/ -vs  # Sort by vendor ID
-    python FontFiles_Organizer.py /path/to/fonts/ -ft "A,B,3"  # Sort by filename prefix
-    python FontFiles_Organizer.py /path/to/fonts/ -vt "ITC"  # Filter by vendor ID
-    python FontFiles_Organizer.py /path/to/fonts/ -nt "International Type"  # Filter by name table
+    fontorganizer /path/to/fonts/
+    fontorganizer /path/to/fonts/ --output-dir /path/to/output/
+    fontorganizer /path/to/fonts/ --dry-run
+    fontorganizer /path/to/fonts/ --verbose
+    fontorganizer /path/to/fonts/ -vs  # Sort by vendor ID
+    fontorganizer /path/to/fonts/ -ft "A,B,3"  # Sort by filename prefix
+    fontorganizer /path/to/fonts/ -vt "ITC"  # Filter by vendor ID
+    fontorganizer /path/to/fonts/ -nt "International Type"  # Filter by name table
 
 Options:
     -dry, --dry-run          Preview changes without moving files
@@ -37,17 +37,7 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 
 # Add project root to path for FontCore imports (works for root and subdirectory scripts)
-import sys
-from pathlib import Path as PathLib
-
 # ruff: noqa: E402
-_project_root = PathLib(__file__).parent
-while (
-    not (_project_root / "FontCore").exists() and _project_root.parent != _project_root
-):
-    _project_root = _project_root.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 # Core module imports
 import FontCore.core_console_styles as cs
@@ -66,7 +56,7 @@ from FontCore.core_font_utils import (
     sanitize_folder_name,
 )
 
-from version_priority import sort_by_version_priority
+from .version_priority import sort_by_version_priority
 
 console = cs.get_console()
 

@@ -8,11 +8,11 @@ Quality-aware priority (revision, language support, features, glyphs) and two-pa
 (temp UUID → final names). Per-directory isolation; optional metadata cache.
 
 Usage:
-    python FontFiles_Rename.py /path/to/fonts/
-    python FontFiles_Rename.py font1.otf font2.otf
-    python FontFiles_Rename.py /directory/ -r
-    python FontFiles_Rename.py /directory/ -n
-    python FontFiles_Rename.py fonts/ -N typo
+    fontrenamer /path/to/fonts/
+    fontrenamer font1.otf font2.otf
+    fontrenamer /directory/ -r
+    fontrenamer /directory/ -n
+    fontrenamer fonts/ -N typo
 
 Options:
     -r, --recursive     Process directories recursively
@@ -55,18 +55,7 @@ try:
 except ImportError:
     HAS_MSVCRT = False
 
-# Add project root to path for FontCore imports
-import sys
-from pathlib import Path as PathLib
-
 # ruff: noqa: E402
-_project_root = PathLib(__file__).parent
-while (
-    not (_project_root / "FontCore").exists() and _project_root.parent != _project_root
-):
-    _project_root = _project_root.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 # Core module imports
 import FontCore.core_console_styles as cs  # noqa: E402

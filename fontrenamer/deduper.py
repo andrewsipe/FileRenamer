@@ -16,11 +16,11 @@ Features:
 - Automatic empty directory cleanup after cross-directory comparison
 
 Usage:
-    python FontFiles_SHA256_Deduplicator.py /path/to/fonts/
-    python FontFiles_SHA256_Deduplicator.py font1.otf font2.otf
-    python FontFiles_SHA256_Deduplicator.py /directory/ -r
-    python FontFiles_SHA256_Deduplicator.py /directory/ -n
-    python FontFiles_SHA256_Deduplicator.py --compare-dirs /fonts1 /fonts2 -r
+    fontdeduper /path/to/fonts/
+    fontdeduper font1.otf font2.otf
+    fontdeduper /directory/ -r
+    fontdeduper /directory/ -n
+    fontdeduper --compare-dirs /fonts1 /fonts2 -r
 
 Options:
     -r, --recursive      Process directories recursively
@@ -52,17 +52,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
 # Add project root to path for FontCore imports (works for root and subdirectory scripts)
-import sys
-from pathlib import Path as PathLib
-
 # ruff: noqa: E402
-_project_root = PathLib(__file__).parent
-while (
-    not (_project_root / "FontCore").exists() and _project_root.parent != _project_root
-):
-    _project_root = _project_root.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 import FontCore.core_console_styles as cs
 from FontCore.core_file_collector import collect_font_files

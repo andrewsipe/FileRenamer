@@ -1,21 +1,40 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "font-filerenamer"
-version = "0.1.0"
-description = "Font file renaming, organizing, and deduplication tools"
+name = "fontrenamer"
+version = "0.2.0"
+description = "Rename, organize, and deduplicate font files from their name tables"
 readme = "README.md"
 requires-python = ">=3.9"
+authors = [
+    { name = "Andrew Sipe" }
+]
+license = { text = "MIT" }
 dependencies = [
     "fonttools>=4.40.0",
     "rich>=13.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/andrewsipe/FileRenamer"
+Repository = "https://github.com/andrewsipe/FileRenamer"
+
+[project.scripts]
+fontrenamer = "fontrenamer.renamer:main"
+fontorganizer = "fontrenamer.organizer:main"
+fontdeduper = "fontrenamer.deduper:main"
+
 [tool.setuptools]
-packages = ["."]
+packages = ["fontrenamer", "FontCore"]
 
-[tool.setuptools.package-data]
-"*" = ["*.py", "core/**/*"]
+[tool.setuptools.package-dir]
+"fontrenamer" = "fontrenamer"
+"FontCore" = "FontCore"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.fontcore-vendor]
+modules = ["core_console_styles", "core_file_collector", "core_font_extension", "core_font_metadata", "core_font_sorter", "core_font_utils", "core_name_policies", "core_variable_filename_parser", "core_variable_font_detection"]
