@@ -85,3 +85,6 @@ temp_font_metadata.tmp
 .metrics_checkpoint.json
 *.metrics_checkpoint.json
 
+
+# Generated URL list (not part of the project)
+raw_github_urls.txt
