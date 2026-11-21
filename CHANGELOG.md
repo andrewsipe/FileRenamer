@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1] - 2026-11-21
+
+### Changed
+- Vendored FontCore refreshed to v0.3.1 (14 modules). Wording and counts in the console messages change ("1 file" / "3 files", `Finished`).
+  The renamer reads existing name records and uses FontCore only to clean PostScript names; on a 150-font sample per stem mode (`ps`, `typo`, `full`, `legacy`, `uid`, `best`) the dry runs are identical to 0.2.0, and `sanitize_postscript` gives the same result for 7,695 names from a 1,539-font library.
+
 ## [0.2.0] - 2026-11-20
 
 First installable release.

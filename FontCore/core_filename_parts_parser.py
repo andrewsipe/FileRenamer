@@ -147,6 +147,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Tuple
 
+from FontCore.core_font_style_dictionaries import join_mono_compounds, join_style_compounds
+
 
 # PascalCase tokenization pattern components:
 # 1. Acronym runs before CamelCase: "XMLHttp" -> "XML", "Http"
@@ -417,7 +419,7 @@ def format_pascal_words(value: str) -> str:
 
     Example: "QueenSansExtra" -> "Queen Sans Extra".
     Acronym runs are preserved: "UIUXKit" -> "UIUX Kit".
-    Underscores act as additional breakpoint separators: "ABC_EFGRegular" -> "ABC EFG Regular".
+    Underscores and spaces act as additional breakpoint separators: "ABC_EFGRegular" -> "ABC EFG Regular".
     Segments starting with lowercase preserve their original casing: "oook-Regular" -> "oook Regular".
     Digit sequences followed by lowercase-only tokens are merged: "35mm" stays "35mm" not "35 Mm".
     Special characters have contextual spacing rules applied (leading-space, trailing-space, no-space, etc.).
@@ -425,8 +427,8 @@ def format_pascal_words(value: str) -> str:
     if not value:
         return ""
 
-    # Split by underscores and filter out empty segments
-    segments = [seg for seg in value.split("_") if seg]
+    # Split at underscores and spaces (a name that already has spaces is not PascalCase) and drop empties
+    segments = [seg for seg in re.split(r"[_\s]+", value) if seg]
 
     # Tokenize each segment and format tokens
     formatted_tokens = []
@@ -498,14 +500,15 @@ def split_family_subfamily(
     - Split at the first hyphen only
     - Family is the left side, Subfamily is the right side (or empty if no hyphen)
     - Each side is converted to space-separated words respecting acronym rules
+    - Compound style words in the subfamily are joined (Semi Bold -> Semibold; Semi Condensed -> SemiCondensed)
 
     Returns a tuple: (family, subfamily)
     """
     base = _normalize_basename(input_name, strip_extension=strip_extension)
     left, right = _split_at_hyphen(base)
 
-    family = format_pascal_words(left)
-    subfamily = format_pascal_words(right) if right else ""
+    family = join_mono_compounds(format_pascal_words(left))
+    subfamily = join_style_compounds(format_pascal_words(right)) if right else ""
 
     return family, subfamily
 
@@ -549,8 +552,8 @@ def parse_filename(input_name: str, *, strip_extension: bool = True) -> ParsedNa
         base=base,
         family_raw=left,
         subfamily_raw=right,
-        family=format_pascal_words(left),
-        subfamily=format_pascal_words(right) if right else "",
+        family=join_mono_compounds(format_pascal_words(left)),
+        subfamily=join_style_compounds(format_pascal_words(right)) if right else "",
     )
 
 

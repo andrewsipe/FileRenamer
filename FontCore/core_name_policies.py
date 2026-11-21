@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from typing import Any, Optional, Dict, List, TYPE_CHECKING
 
 # New imports for enhanced functionality
@@ -53,6 +54,7 @@ from FontCore.core_string_utils import normalize_empty, is_empty, join_nonempty
 from FontCore.core_font_style_dictionaries import (
     ELIDABLE_VF_FILENAME_SLOPES,
     ITALIC_LIKE_SLOPE_TERMS,
+    ensure_weight_word,
 )
 
 if TYPE_CHECKING:
@@ -60,74 +62,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-DEFAULT_REGULAR_SYNONYMS_MODE = "regular_only"
-
 # Slopes elided from variable-font display names (ID4) and ID17
 ELIDABLE_VF_DISPLAY_SLOPES: frozenset[str] = frozenset(
     {"Regular", "Roman", "Normal", "Plain", "Standard", "Upright"}
 ) | ELIDABLE_VF_FILENAME_SLOPES
-
-# Canonical list of valid regular-equivalent terms
-VALID_REGULAR_EQUIVALENTS = frozenset(
-    [
-        "Regular",
-        "Roman",
-        "Plain",
-        "Normal",
-        "Standard",
-        "Book",
-        "Text",
-        "Medium",
-        "Light",
-    ]
-)
-
-
-class RegularEquivalentError(ValueError):
-    """Raised when an invalid regular_equivalent value is provided."""
-
-    pass
-
-
-def validate_regular_equivalent(
-    value: str | None, *, strict: bool = False
-) -> str | None:
-    """
-    Validate regular_equivalent parameter.
-
-    Args:
-        value: The regular_equivalent value to validate
-        strict: If True, raise exception on invalid values.
-                If False, log warning and return None.
-
-    Returns:
-        Validated value or None if invalid
-
-    Raises:
-        RegularEquivalentError: If strict=True and value is invalid
-    """
-    normalized = normalize_empty(value)
-
-    # None or empty is always valid
-    if normalized is None:
-        return None
-
-    # Check against valid list (case-insensitive)
-    if normalized.title() not in VALID_REGULAR_EQUIVALENTS:
-        valid_list = ", ".join(sorted(VALID_REGULAR_EQUIVALENTS))
-        error_msg = (
-            f"Invalid regular_equivalent '{normalized}'. Must be one of: {valid_list}"
-        )
-
-        if strict:
-            raise RegularEquivalentError(error_msg)
-        else:
-            logger.warning(f"{error_msg}. Ignoring this parameter.")
-            return None
-
-    # Return title-cased version for consistency
-    return normalized.title()
-
 
 def normalize_nfc(value: str | None) -> str | None:
     """Return Unicode NFC-normalized string; pass through None."""
@@ -186,131 +124,90 @@ def detect_compound_modifier_patterns(
     return len(instances) > 0, instances
 
 
-RE_REGULAR = re.compile(r"\b(Regular|Roman)\b", re.I)
-RE_REVERSE_ITALIC = re.compile(r"\bReverse\s+Italic\b", re.I)
-RE_REVERSE_SLANTED = re.compile(r"\bReverse\s+Slanted\b", re.I)
-RE_ITALIC = re.compile(r"\bItalic\b", re.I)
-RE_OBLIQUE = re.compile(r"\bOblique\b", re.I)
-RE_BACKSLANTED = re.compile(r"\bBack\s*Slanted\b|\bBackslanted\b", re.I)
-RE_BACKSLANT = re.compile(r"\bBackslant\b", re.I)
-RE_SLANTED = re.compile(r"\bSlanted\b", re.I)
-RE_SLANT = re.compile(r"\bSlant\b", re.I)
-RE_INCLINED = re.compile(r"\bInclined\b", re.I)
-RE_RETALIC = re.compile(r"\bRetalic\b", re.I)
-RE_REVERSE = re.compile(r"\bReverse\b", re.I)
-RE_CURSIVE = re.compile(r"\b(Cursive|Kursiv)\b", re.I)
-RE_BOOK = re.compile(r"\bBook\b", re.I)
-RE_NORMAL = re.compile(r"\bNormal\b", re.I)
 RE_VARIABLE_TOKENS = re.compile(r"\b(Variable|VF|GX|Flex)\b", re.I)
 
-# (pattern, canonical slope label) — compound / longer forms first
-_STYLE_SLOPE_EXTRACTORS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (RE_REVERSE_ITALIC, "Reverse Italic"),
-    (RE_REVERSE_SLANTED, "Reverse Slanted"),
-    (RE_ITALIC, "Italic"),
-    (RE_OBLIQUE, "Oblique"),
-    (RE_BACKSLANTED, "Backslanted"),
-    (RE_BACKSLANT, "Backslant"),
-    (RE_SLANTED, "Slanted"),
-    (RE_INCLINED, "Inclined"),
-    (RE_RETALIC, "Retalic"),
-    (RE_CURSIVE, "Cursive"),
-    (RE_REVERSE, "Reverse"),
-    (RE_SLANT, "Slant"),
-)
+# Words ID1 leaves out: the RIBBI words. Every other word is an ordinary style word and stays in ID1.
+_ID1_DROPPED_WORDS = frozenset({"regular", "italic", "bold"})
+
+# A measured italic angle at or beyond this many degrees (forward or back) means a slanted face.
+ITALIC_ANGLE_FLOOR = 2.0
 
 
-def _strip_token(pattern: "re.Pattern[str]", text: str) -> tuple[str, bool]:
-    new_text, count = pattern.subn("", text)
-    new_text = " ".join(new_text.split())
-    return new_text, count > 0
+def id1_style(style: str | None) -> str | None:
+    """Style words for ID1: drop only the exact words Regular, Italic and Bold.
 
-
-def _extract_slope_from_style(style: str) -> tuple[str, str | None]:
-    """Extract slope term from style, returning (cleaned_style, slope)."""
-    for pattern, label in _STYLE_SLOPE_EXTRACTORS:
-        if pattern.search(style):
-            style, _ = _strip_token(pattern, style)
-            return style, label
-    return style, None
-
-
-def _apply_regular_synonym_mode(
-    style: str, mode: str, drop_book: bool | None, drop_normal: bool | None
-) -> str:
-    """Apply Book/Normal stripping based on mode and explicit flags."""
-    # Explicit flags take precedence
-    if drop_book is True:
-        style, _ = _strip_token(RE_BOOK, style)
-    if drop_normal is True:
-        style, _ = _strip_token(RE_NORMAL, style)
-
-    # Apply mode if no explicit flags
-    if drop_book is None and drop_normal is None:
-        mode_lower = (mode or DEFAULT_REGULAR_SYNONYMS_MODE).lower()
-
-        if mode_lower == "loose":
-            style, _ = _strip_token(RE_BOOK, style)
-            style, _ = _strip_token(RE_NORMAL, style)
-        elif mode_lower == "conservative":
-            candidate = style.strip().lower()
-            if candidate in {"book", "normal"}:
-                style, _ = _strip_token(RE_BOOK, style)
-                style, _ = _strip_token(RE_NORMAL, style)
-
-    return style
-
-
-def normalize_style_and_slope_for_id1_id4(
-    subfamily_style: str | None,
-    slope: str | None,
-    *,
-    regular_synonyms_mode: str = DEFAULT_REGULAR_SYNONYMS_MODE,
-    drop_book: bool | None = None,
-    drop_normal: bool | None = None,
-    regular_equivalent: str | None = None,
-) -> tuple[str | None, str | None]:
-    """Normalize a style string for ID1/ID4 policy.
-
-    - Remove Regular/Roman from style
-    - If regular_equivalent is provided, also remove that term
-    - If Italic/Oblique/Slanted appear in style, move them into slope when slope is not set
-    - Idempotent: can be executed repeatedly safely
+    No slope vocabulary: Oblique, Cursive, Backslanted and every other word stay, so ID1 + ID2 stay
+    unique (ID2 says Italic for all of them). Roman, Book, Normal, Plain, Medium, Light and Text stay too.
     """
-    # Validate regular_equivalent
-    regular_equivalent = validate_regular_equivalent(regular_equivalent, strict=False)
+    style = normalize_empty(style)
+    if is_empty(style):
+        return None
+    kept = [w for w in str(style).split() if w.lower() not in _ID1_DROPPED_WORDS]
+    return normalize_empty(" ".join(kept))
 
-    # Normalize inputs
-    subfamily_style = normalize_empty(subfamily_style)
-    slope = normalize_empty(slope)
 
-    if is_empty(subfamily_style):
-        return None, slope
+@dataclass(frozen=True)
+class RibbiDecision:
+    """ID2 and the style it implies: one of Regular, Italic, Bold, Bold Italic."""
 
-    style = subfamily_style
-    style, _ = _strip_token(RE_REGULAR, style)
+    subfamily: str
+    bold: bool
+    italic: bool
+    notes: tuple[str, ...] = ()
 
-    # Strip regular-equivalent term if provided and valid
-    if regular_equivalent and regular_equivalent.lower() != "regular":
-        equiv_pattern = re.compile(rf"\b{re.escape(regular_equivalent)}\b", re.I)
-        style, _ = _strip_token(equiv_pattern, style)
 
-    # Extract and remove slope terms if slope not already set
-    slope_norm = slope
-    if is_empty(slope_norm):
-        style, extracted_slope = _extract_slope_from_style(style)
-        slope_norm = extracted_slope
-    else:
-        # Slope already set, just remove slope terms from style
-        style, _ = _extract_slope_from_style(style)
+_SLOPE_LIKE = {"oblique", "slanted", "slant", "backslanted", "backslant", "inclined", "cursive", "kursiv"}
 
-    # Apply Book/Normal handling
-    style = _apply_regular_synonym_mode(
-        style, regular_synonyms_mode, drop_book, drop_normal
-    )
+_FS_ITALIC, _FS_BOLD = 0x0001, 0x0020
+_MAC_BOLD, _MAC_ITALIC = 0x0001, 0x0002
 
-    style = " ".join(style.split())
-    return normalize_empty(style), slope_norm
+
+def decide_ribbi(
+    style: str | None,
+    *,
+    fs_selection: int = 0,
+    mac_style: int = 0,
+    italic_angle: float | None = None,
+) -> RibbiDecision:
+    """Decide ID2 from the name, then the flags, then the italic angle.
+
+    The name wins. A style that says anything (a weight, Regular, a width) is never turned Italic by
+    the angle alone: a slanted upright-named design (a script, a banner) is not an italic variant.
+
+    - Bold: the word Bold in the style. Flags decide only when the style says nothing at all.
+      usWeightClass is not used (it is not always 700).
+    - Italic: the word Italic in the style. When the style says nothing at all, the flags decide, then a
+      measured angle with |angle| >= ITALIC_ANGLE_FLOOR (forward or back slants). A name that says
+      Italic is never demoted by a flat angle, and a slanted font whose name says nothing about slope
+      keeps Regular; both return a note instead.
+    """
+    text = normalize_empty(style) or ""
+    words = {w.lower() for w in text.split()}
+    says_nothing = not words
+
+    bold = "bold" in words
+    if not bold and says_nothing:
+        bold = bool(fs_selection & _FS_BOLD or mac_style & _MAC_BOLD)
+
+    notes: list[str] = []
+    slanted = italic_angle is not None and abs(italic_angle) >= ITALIC_ANGLE_FLOOR
+    italic = "italic" in words
+    if not italic and says_nothing:
+        italic = bool(fs_selection & _FS_ITALIC or mac_style & _MAC_ITALIC)
+    # The angle can add Italic only when the style names a slope (Oblique, Backslant, Cursive, ...) or
+    # says nothing. Any other style (a weight, Regular, a width, or a bespoke word like Bulky) is an
+    # upright name, so a slanted design keeps Regular: a script is not an italic variant, and an
+    # unknown word next to an Italic sibling must not collide with it (PolySansMono Bulky / Bulky Italic).
+    might_name_slope = says_nothing or bool(words & _SLOPE_LIKE)
+    if not italic and slanted and might_name_slope:
+        italic = True
+    if slanted and not italic:
+        notes.append(f"the italic angle is {italic_angle:g} degrees but the name does not say Italic")
+    if "italic" in words and italic_angle is not None and not slanted:
+        notes.append(f"the name says Italic but the italic angle is {italic_angle:g} degrees")
+
+    subfamily = "Bold Italic" if bold and italic else "Bold" if bold else "Italic" if italic else "Regular"
+    return RibbiDecision(subfamily, bold, italic, tuple(notes))
 
 
 def normalize_subfamily_term(
@@ -476,17 +373,24 @@ def is_elidable_vf_slope(slope: str | None) -> bool:
     return slope.strip().lower() in {s.lower() for s in ELIDABLE_VF_DISPLAY_SLOPES}
 
 
-def build_id1_from_variable_slots(slots: "VariableFilenameSlots") -> str:
-    """Construct ID1 from parsed variable-font filename slots."""
+def _variable_family_base(slots: "VariableFilenameSlots") -> str:
+    """Root family plus optical size and width, without the word Variable."""
     return (
         join_nonempty(slots.root_family, slots.optical, slots.width) or slots.root_family
     )
 
 
+def build_id1_from_variable_slots(slots: "VariableFilenameSlots") -> str:
+    """Construct ID1 from parsed variable-font filename slots.
+
+    "Variable" stays in ID1 (house convention, DECISIONS.md C4): it is part of what the font is.
+    """
+    return join_nonempty(_variable_family_base(slots), "Variable")
+
+
 def build_id4_from_variable_slots(slots: "VariableFilenameSlots") -> str:
     """Construct ID4 from parsed variable-font filename slots."""
-    base = build_id1_from_variable_slots(slots)
-    parts: list[str | None] = [base, "Variable", slots.bespoke]
+    parts: list[str | None] = [_variable_family_base(slots), "Variable", slots.bespoke]
     if slots.slope and not is_elidable_vf_slope(slots.slope):
         parts.append(slots.slope)
     return join_nonempty(*parts)
@@ -514,41 +418,27 @@ def build_id1(
     variable_family_override: str | None = None,
     variable_slots: "VariableFilenameSlots | None" = None,
     use_filename_normalization: bool = True,
-    regular_synonyms_mode: str = DEFAULT_REGULAR_SYNONYMS_MODE,
-    regular_equivalent: str | None = None,
 ) -> str:
     """Construct ID1 (Family) string with policy."""
     if variable_slots is not None:
         return build_id1_from_variable_slots(variable_slots)
 
-    # Validate regular_equivalent
-    regular_equivalent = validate_regular_equivalent(regular_equivalent, strict=False)
-
     # Variable font policy: Strip "Variable" tokens from family name
     if is_variable:
         if variable_family_override:
-            # Full name from filename: strip only Variable token, keep prefix/suffix (e.g. "Font Variable Black" -> "Font Black")
-            return strip_only_variable_token(variable_family_override) or variable_family_override
+            # Full name from filename: keep one "Variable" and any prefix/suffix, drop pairing markers
+            # (e.g. "Font Variable Black" stays, "Font VariableItalic" -> "Font Variable")
+            kept = keep_one_variable_token(variable_family_override)
+            return kept if kept and "variable" in kept.lower() else join_nonempty(kept, "Variable")
         base = family
         # Asterisks are preserved in family names
-        return strip_variable_tokens(base) or base
+        return join_nonempty(strip_variable_tokens(base) or base, "Variable")
 
-    style_eff = style
-    slope_eff = slope
-    if use_filename_normalization:
-        style_eff, slope_eff = normalize_style_and_slope_for_id1_id4(
-            style_eff,
-            slope_eff,
-            regular_synonyms_mode=regular_synonyms_mode,
-            regular_equivalent=regular_equivalent,
-        )
-
-    # ID1: omit slope if it's "Italic"
-    if slope_eff and slope_eff.strip().lower() == "italic":
-        slope_eff = None
+    # ID1 keeps every style word except Regular, Italic and Bold (no slope vocabulary)
+    style_eff = id1_style(join_nonempty(style, slope))
 
     # Asterisks are preserved in ID1 (no sanitization needed)
-    return join_nonempty(family, modifier, style_eff, slope_eff)
+    return join_nonempty(family, modifier, style_eff)
 
 
 def build_id4(
@@ -565,8 +455,6 @@ def build_id4(
     prefix_from_filename: str | None = None,
     suffix_from_filename: str | None = None,
     use_filename_normalization: bool = True,
-    regular_synonyms_mode: str = DEFAULT_REGULAR_SYNONYMS_MODE,
-    regular_equivalent: str | None = None,
 ) -> str:
     """Construct ID4 (Full) string with policy."""
     if variable_slots is not None:
@@ -594,18 +482,11 @@ def build_id4(
         suffix = "Variable Italic" if is_italic_font else "Variable"
         return join_nonempty(base, suffix)
 
-    style_eff = style
-    slope_eff = slope
-    if use_filename_normalization:
-        style_eff, slope_eff = normalize_style_and_slope_for_id1_id4(
-            style_eff,
-            slope_eff,
-            regular_synonyms_mode=regular_synonyms_mode,
-            regular_equivalent=regular_equivalent,
-        )
+    # ID4 names the weight: "Probe Regular", "Probe Regular Italic" (house convention, DECISIONS.md C1)
+    style_eff = ensure_weight_word(join_nonempty(modifier, style, slope) or "")
 
     # Asterisks are preserved in ID4 (no sanitization needed)
-    return join_nonempty(family, modifier, style_eff, slope_eff)
+    return join_nonempty(family, style_eff)
 
 
 def build_id16(
@@ -635,11 +516,10 @@ def build_id17(
 ) -> str:
     """Construct ID17 (Typographic Subfamily).
 
-    ID17 retains Regular/Italic tokens; do not apply filename normalization here.
-    Fallback to "Regular" if empty.
+    ID17 keeps Regular and always carries a weight word: a regular italic is "Regular Italic", and
+    "Wide Italic" becomes "Wide Regular Italic". No filename normalization is applied here.
     """
-    out = join_nonempty(modifier, style, slope)
-    return out if out else "Regular"
+    return ensure_weight_word(join_nonempty(modifier, style, slope) or "")
 
 
 __all__ = [
@@ -647,7 +527,10 @@ __all__ = [
     "build_id4",
     "build_id16",
     "build_id17",
-    "normalize_style_and_slope_for_id1_id4",
+    "id1_style",
+    "decide_ribbi",
+    "RibbiDecision",
+    "ITALIC_ANGLE_FLOOR",
     "detect_compound_modifier_patterns",
     # ID2
     "allowed_id2_subfamilies",
@@ -666,8 +549,6 @@ __all__ = [
     # Family-level Regular-equivalent detection
     "REGULAR_FALLBACK_PRIORITY",
     "group_fonts_by_family_filename",
-    "identify_family_regular_equivalent",
-    "get_regular_equivalent_for_families",
     # Variable helpers
     "is_elidable_vf_slope",
     "build_id1_from_variable_slots",
@@ -677,6 +558,7 @@ __all__ = [
     "ELIDABLE_VF_DISPLAY_SLOPES",
     "split_variable_subfamily",
     "strip_only_variable_token",
+    "keep_one_variable_token",
     "strip_variable_tokens",
     "variable_filename_fragment",
     "build_id17_variable_default",
@@ -847,279 +729,6 @@ def build_id5_version_string(version: str | float) -> str:
     return f"Version {format_version_number(version)}"
 
 
-# ---------- Family-level Regular-equivalent detection ----------
-
-REGULAR_FALLBACK_PRIORITY = [
-    "Roman",
-    "Plain",
-    "Normal",
-    "Book",
-    "Text",
-    "Medium",
-    "Light",
-]
-
-
-def group_fonts_by_family_filename(font_paths: list[str]) -> dict[str, list[str]]:
-    """Group font file paths by family name extracted from filename."""
-    try:
-        from FontCore.core_filename_parts_parser import parse_filename
-    except ImportError:
-        return _group_fonts_fallback(font_paths)
-
-    families: dict[str, list[str]] = {}
-    for path in font_paths:
-        parsed = parse_filename(path, strip_extension=True)
-        fam = parsed.family if parsed.family else "Unknown"
-        families.setdefault(fam, []).append(path)
-    return families
-
-
-def _group_fonts_fallback(font_paths: list[str]) -> dict[str, list[str]]:
-    """Fallback grouping when parser not available."""
-    import os
-
-    families: dict[str, list[str]] = {}
-    for path in font_paths:
-        base = os.path.basename(path)
-        base_no_ext = os.path.splitext(base)[0]
-        fam = base_no_ext.split("-", 1)[0] if "-" in base_no_ext else base_no_ext
-        families.setdefault(fam, []).append(path)
-    return families
-
-
-def _extract_weight_term_from_subfamily(subfamily: str) -> str | None:
-    """Extract first recognized weight term from subfamily string."""
-    if not subfamily:
-        return None
-
-    sub_lower = subfamily.lower()
-
-    for term in REGULAR_FALLBACK_PRIORITY:
-        if term.lower() in sub_lower:
-            return term
-
-    if "regular" in sub_lower:
-        return "Regular"
-
-    return None
-
-
-def _check_text_standalone(subfamily: str) -> bool:
-    """Check if 'Text' appears as a standalone optical size, not with weight terms."""
-    if not subfamily or "text" not in subfamily.lower():
-        return False
-
-    sub_lower = subfamily.lower()
-
-    # Exclude if combined with weight terms
-    weight_disqualifiers = [
-        "bold",
-        "book",
-        "normal",
-        "medium",
-        "black",
-        "heavy",
-        "extra",
-        "semi",
-        "demi",
-    ]
-    if any(w in sub_lower for w in weight_disqualifiers):
-        return False
-
-    # Remove slope tokens and see if we're left with just "text"
-    temp = sub_lower
-    temp = re.sub(r"\b(italic|oblique|slanted)\b", "", temp)
-    temp = re.sub(r"[^a-z]+", "", temp)
-
-    return temp == "text"
-
-
-def _get_usweightclass_from_font(font_path: str) -> int | None:
-    """Read usWeightClass from a font file without full table loading."""
-    try:
-        from fontTools.ttLib import TTFont
-
-        font = TTFont(font_path, lazy=True)
-        if "OS/2" in font:
-            weight = font["OS/2"].usWeightClass
-            font.close()
-            return int(weight)
-        else:
-            logger.debug(f"Font '{font_path}' has no OS/2 table")
-    except Exception as e:
-        logger.warning(f"Failed to read usWeightClass from '{font_path}': {e}")
-    return None
-
-
-def _check_for_regular_in_filenames(family_paths: list[str]) -> bool:
-    """Check if any font in family has 'Regular' in filename."""
-    try:
-        from FontCore.core_filename_parts_parser import parse_filename
-    except ImportError:
-        return False
-
-    for path in family_paths:
-        parsed = parse_filename(path, strip_extension=True)
-        if parsed.subfamily and "regular" in parsed.subfamily.lower():
-            return True
-    return False
-
-
-def _find_closest_to_400_weight_term(family_paths: list[str]) -> str | None:
-    """Find regular-equivalent term by analyzing which term is closest to weight 400.
-
-    Logic:
-    1. For each recognized term (Roman, Plain, Normal, Book, etc.), find fonts with that term
-    2. Get average weight for that term across all width variants
-    3. Return term closest to 400
-    4. On ties, use priority order (REGULAR_FALLBACK_PRIORITY)
-    """
-    try:
-        from FontCore.core_filename_parts_parser import parse_filename
-    except ImportError:
-        return None
-
-    # Build term -> list of weights mapping
-    term_weights: Dict[str, List[int]] = {}
-
-    for path in family_paths:
-        weight = _get_usweightclass_from_font(path)
-        if weight is None:
-            continue
-
-        parsed = parse_filename(path, strip_extension=True)
-        if not parsed.subfamily:
-            continue
-
-        term = _extract_weight_term_from_subfamily(parsed.subfamily)
-        if term:
-            if term not in term_weights:
-                term_weights[term] = []
-            term_weights[term].append(weight)
-
-    if not term_weights:
-        return None
-
-    # Calculate average weight for each term
-    term_avg_weights: Dict[str, float] = {}
-    for term, weights in term_weights.items():
-        term_avg_weights[term] = sum(weights) / len(weights)
-
-    # Find term(s) closest to 400
-    closest_distance = float("inf")
-    closest_terms = []
-
-    for term, avg_weight in term_avg_weights.items():
-        distance = abs(avg_weight - 400)
-        if distance < closest_distance:
-            closest_distance = distance
-            closest_terms = [term]
-        elif distance == closest_distance:
-            closest_terms.append(term)
-
-    # If single winner, return it
-    if len(closest_terms) == 1:
-        logger.debug(
-            f"Found single closest term: {closest_terms[0]} (avg weight: {term_avg_weights[closest_terms[0]]:.1f}, distance: {closest_distance:.1f})"
-        )
-        return closest_terms[0]
-
-    # Multiple terms at same distance - use priority order
-    for candidate in REGULAR_FALLBACK_PRIORITY:
-        if candidate in closest_terms:
-            logger.debug(
-                f"Tie resolved by priority: {candidate} (avg weight: {term_avg_weights[candidate]:.1f}, distance: {closest_distance:.1f})"
-            )
-            return candidate
-
-    # Fallback to first term found
-    result = closest_terms[0] if closest_terms else None
-    if result:
-        logger.debug(
-            f"Fallback selection: {result} (avg weight: {term_avg_weights[result]:.1f}, distance: {closest_distance:.1f})"
-        )
-    return result
-
-
-def _find_term_from_filenames(family_paths: list[str]) -> str | None:
-    """Find fallback term from filenames by scanning in priority order."""
-    try:
-        from FontCore.core_filename_parts_parser import parse_filename
-    except ImportError:
-        return None
-
-    term_counts: dict[str, int] = {}
-    text_standalone_count = 0
-
-    for path in family_paths:
-        parsed = parse_filename(path, strip_extension=True)
-        if not parsed.subfamily:
-            continue
-
-        if _check_text_standalone(parsed.subfamily):
-            text_standalone_count += 1
-
-        term = _extract_weight_term_from_subfamily(parsed.subfamily)
-        if term:
-            term_counts[term] = term_counts.get(term, 0) + 1
-
-    # Return first term found in priority order
-    for candidate in REGULAR_FALLBACK_PRIORITY:
-        if candidate == "Text":
-            if text_standalone_count > 0:
-                return "Text"
-        elif candidate in term_counts:
-            return candidate
-
-    return None
-
-
-def identify_family_regular_equivalent(family_paths: list[str]) -> str | None:
-    """Identify which weight term acts as "Regular" for this font family.
-
-    Detection priority:
-    1. Check filenames for "Regular"
-    2. Check usWeightClass == 400 (must be exactly one match)
-    3. Check filenames for fallback terms in priority order
-    4. Special handling for "Text" (must be standalone optical size)
-    """
-    if not family_paths:
-        return None
-
-    logger.debug(f"Analyzing {len(family_paths)} fonts for regular equivalent")
-
-    # Step 1: Check for "Regular" in filenames
-    if _check_for_regular_in_filenames(family_paths):
-        logger.debug("Found 'Regular' in filenames")
-        return "Regular"
-
-    # Step 2: Find term closest to weight 400 across all variants
-    term = _find_closest_to_400_weight_term(family_paths)
-    if term:
-        logger.debug(f"Found closest-to-400 term: {term}")
-        return term
-
-    # Step 3: Check filenames for fallback terms
-    term = _find_term_from_filenames(family_paths)
-    if term:
-        logger.debug(f"Found fallback term in filenames: {term}")
-    else:
-        logger.info(
-            f"Could not determine regular equivalent for family with {len(family_paths)} fonts"
-        )
-    return term
-
-
-def get_regular_equivalent_for_families(font_paths: list[str]) -> dict[str, str | None]:
-    """Analyze font files and return per-family regular-equivalent mapping."""
-    families = group_fonts_by_family_filename(font_paths)
-    return {
-        fam: identify_family_regular_equivalent(paths)
-        for fam, paths in families.items()
-    }
-
-
 # ---------- Variable font helpers ----------
 
 
@@ -1160,6 +769,22 @@ def split_variable_subfamily(subfamily: str | None) -> tuple[str, str]:
         else ""
     )
     return prefix, suffix
+
+
+def keep_one_variable_token(text: str | None) -> str | None:
+    """Reduce Variable / VariableItalic / Variable Upright / VariableRoman to a single "Variable".
+
+    Used for ID1 of a variable font: the word stays, the pairing marker (Italic, Upright, Roman) goes.
+    """
+    text = normalize_empty(text)
+    if is_empty(text):
+        return None
+    s = re.sub(
+        r"(?i)(?<![A-Za-z0-9])Variable(?:\s+(?:Italic|Upright|Roman)|(?:Italic|Upright|Roman))?(?![A-Za-z0-9])",
+        "Variable",
+        str(text),
+    )
+    return normalize_empty(" ".join(s.split()))
 
 
 def strip_only_variable_token(text: str | None) -> str | None:

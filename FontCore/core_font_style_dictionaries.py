@@ -6,6 +6,9 @@ Philosophy: Minimal dictionaries for deterministic outcomes and ambiguity resolu
 Pattern matching handles variations programmatically.
 """
 
+import re
+
+
 # ================================================================================================
 # 1. COMPOUND NORMALIZATIONS (~30 entries)
 # ================================================================================================
@@ -252,6 +255,10 @@ ELIDABLE_VF_FILENAME_SLOPES: frozenset[str] = frozenset({"Upright", "Roman"})
 
 MODIFIERS = {"Semi", "Demi", "Extra", "Ultra", "Super"}
 
+# Weight words that take a modifier (Semi + Bold, Extra + Light, ...). House style: weight compounds are
+# one word (Semibold, Extralight), and width compounds are joined with their capitals (SemiCondensed).
+WEIGHT_BASES = {"Hairline", "Thin", "Light", "Medium", "Bold", "Black", "Heavy"}
+
 # Terms that suggest elidable=True when used as a weight name (STAT AxisValue names)
 ELIDABLE_WEIGHT_NAMES: frozenset[str] = frozenset(
     {
@@ -372,6 +379,149 @@ def generate_all_optical_variations() -> set[str]:
     Returns base optical terms (no modifiers typically used with optical sizes).
     """
     return set(OPTICAL_BASES)
+
+
+# Words that fill the weight position of a style name. "Roman" and the regular equivalents count: they are
+# how a family names its upright, so nothing needs adding. "Text" is a weight only when it stands alone;
+# next to another word it is an optical size (see has_weight_word).
+WEIGHT_WORDS = frozenset(
+    {
+        "hairline", "thin", "extralight", "ultralight", "light", "semilight", "demilight",
+        "book", "regular", "normal", "plain", "standard", "roman", "medium",
+        "demibold", "semibold", "bold", "extrabold", "ultrabold", "superbold",
+        "black", "heavy", "extrablack", "ultrablack", "extraheavy", "ultraheavy", "fat", "super", "ultra",
+    }
+    | {f"{m.lower()}{w.lower()}" for m in MODIFIERS for w in WEIGHT_BASES}
+    | {str(n) for n in range(100, 1100, 100)}
+)
+
+
+def has_weight_word(text: str) -> bool:
+    """True when the style text has a word in the weight position (Bold, Semibold, Regular, Roman, 400...).
+
+    `Text` counts only when it is the only word: with another word it is an optical size.
+    """
+    tokens = [t.lower() for t in (text or "").split()]
+    if not tokens:
+        return False
+    if tokens == ["text"]:
+        return True
+    return any(t in WEIGHT_WORDS for t in tokens)
+
+
+_WIDTH_LOWER = None
+
+
+def _width_lower() -> frozenset:
+    global _WIDTH_LOWER
+    if _WIDTH_LOWER is None:
+        _WIDTH_LOWER = frozenset(
+            {w.lower() for w in WIDTH_BASES}
+            | {f"{m}{w}".lower() for m in MODIFIERS for w in WIDTH_BASES}
+            | {f"{'x' * n}{w}".lower() for n in range(1, 8) for w in WIDTH_BASES}
+        )
+    return _WIDTH_LOWER
+
+
+def unknown_weight_candidates(text: str) -> list:
+    """Words in a style that has no weight word and are neither a width nor Italic.
+
+    Such a word may already be the weight under a name the tool does not know (Air, Fine...), so a
+    weight is not added next to it. Empty when the style has a weight word or holds only width/Italic words.
+    """
+    text = " ".join((text or "").split())
+    if not text or has_weight_word(text):
+        return []
+    return [t for t in text.split() if t.lower() != "italic" and t.lower() not in _width_lower()]
+
+
+def ensure_weight_word(text: str) -> str:
+    """Add Regular when the style has no weight word and nothing in it could be one.
+
+    Added only when the style is empty or holds only width and Italic words: "Wide Italic" ->
+    "Wide Regular Italic", "Condensed" -> "Condensed Regular". When the style has any other word
+    (Air, Oblique, Circle...) it is returned unchanged: that word may be the weight, and guessing
+    would label it Regular. Safe to run twice.
+    """
+    text = " ".join((text or "").split())
+    if not text:
+        return "Regular"
+    if has_weight_word(text) or unknown_weight_candidates(text):
+        return text
+    tokens = text.split()
+    if tokens[-1].lower() == "italic":
+        tokens.insert(len(tokens) - 1, "Regular")
+    else:
+        tokens.append("Regular")
+    return " ".join(tokens)
+
+
+def join_style_compounds(text: str) -> str:
+    """Join the pieces of compound style words that PascalCase splitting pulled apart.
+
+    - modifier + weight is one word, second part lowercase: "Semi Bold" -> "Semibold",
+      "Extra Light" -> "Extralight"
+    - modifier + width (or X-run + width) is joined with capitals kept: "Semi Condensed" ->
+      "SemiCondensed", "XX Condensed" -> "XXCondensed"
+    - "Small Caps" -> "Smallcaps" (the one exception to keeping capitals)
+
+    Everything else is left alone, so the function is safe to run twice. Apply it to a style
+    (subfamily) string, not to a family name.
+    """
+    if not text:
+        return text
+    tokens = text.split()
+    out = []
+    i = 0
+    modifiers = {m.lower() for m in MODIFIERS}
+    weights = {w.lower() for w in WEIGHT_BASES}
+    widths = {w.lower() for w in WIDTH_BASES}
+    while i < len(tokens):
+        token = tokens[i]
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if nxt is not None:
+            low, nxt_low = token.lower(), nxt.lower()
+            is_modifier = low in modifiers
+            is_x_run = bool(re.fullmatch(r"X{1,7}", token))
+            if is_modifier and nxt_low in weights:
+                out.append(token.capitalize() + nxt_low)
+                i += 2
+                continue
+            if is_modifier and nxt_low == "mono":
+                # Semi + Mono is one word wherever it appears (SemiMono), like the width compounds
+                out.append(token.capitalize() + nxt.capitalize())
+                i += 2
+                continue
+            if (is_modifier or is_x_run) and nxt_low in widths:
+                first = token if is_x_run else token.capitalize()
+                out.append(first + nxt.capitalize())
+                i += 2
+                continue
+            if low == "small" and nxt_low == "caps":
+                out.append("Smallcaps")
+                i += 2
+                continue
+        out.append(token)
+        i += 1
+    return " ".join(out)
+
+
+def join_mono_compounds(text: str) -> str:
+    """Join "Semi Mono" (modifier + Mono) into "SemiMono" and leave everything else alone.
+
+    Used on family names, where the other style compounds must not be touched.
+    """
+    tokens = (text or "").split()
+    modifiers = {m.lower() for m in MODIFIERS}
+    out, i = [], 0
+    while i < len(tokens):
+        if i + 1 < len(tokens) and tokens[i].lower() in modifiers and tokens[i + 1].lower() == "mono":
+            out.append(tokens[i].capitalize() + "Mono")
+            i += 2
+        else:
+            out.append(tokens[i])
+            i += 1
+    return " ".join(out)
 
 
 # Cache generated variations at module load time
