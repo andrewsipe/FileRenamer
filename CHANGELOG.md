@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- `fontorganizer` now has the same-face check the renamer got in 0.3.0: fonts that share a PostScript name but differ in weight, slant or size are not ranked, and each keeps its own filename (with a warning). FontCore refreshed so its font metadata records weight, slant and variable-ness.
 - Help in plain words for `fontrenamer`, `fontorganizer` and `fontdeduper` (standard flag wording, no old script names), and each ends with a Heads up line: the renamer renames in place with no backup, the organizer moves and renames into the output folder, the deduper moves duplicates to the trash folder (recoverable). Preview first with `-n`.
 
 ## [0.3.0] - 2026-11-22

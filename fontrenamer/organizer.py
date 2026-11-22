@@ -56,7 +56,7 @@ from FontCore.core_font_utils import (
     sanitize_folder_name,
 )
 
-from .conflict import rank as rank_duplicates
+from .conflict import cluster_same_face, rank as rank_duplicates
 
 console = cs.get_console()
 
@@ -531,6 +531,18 @@ def extract_font_organization_data(
     # Assign final names: the best copy keeps the clean name, the rest get ~001, ~002 (fontrenamer/conflict.py)
     rename_map: Dict[Path, str] = {}
     for ps_name, metadata_list in ps_name_groups.items():
+        # Fonts that share a PostScript name but differ in weight, slant or size are not copies of one font:
+        # rank nothing, keep each file's own name (fontrenamer/conflict.py)
+        if len(metadata_list) > 1 and len(cluster_same_face(metadata_list)) > 1:
+            for meta in metadata_list:
+                rename_map[Path(meta.file_path).resolve()] = meta.original_filename or Path(meta.file_path).name
+            if console:
+                cs.StatusIndicator("warning").add_message(
+                    f"{ps_name} is the name of {len(metadata_list)} different fonts "
+                    "(they differ in weight, slant or size), so each keeps its own filename"
+                ).emit()
+            continue
+
         sorted_fonts = rank_duplicates(metadata_list)
         first_path = Path(sorted_fonts[0].file_path).resolve()
         ext = first_path.suffix.lower()

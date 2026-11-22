@@ -33,6 +33,10 @@ class FontMetadata:
     file_path: str
     original_filename: Optional[str] = None
     detected_format: Optional[str] = None
+    # what tells two fonts of one name apart (None = unknown, never evidence)
+    weight_class: Optional[int] = None  # OS/2 usWeightClass
+    is_italic: Optional[bool] = None  # fsSelection italic/oblique bit or macStyle italic bit
+    is_variable: bool = False  # has an fvar table
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -126,6 +130,14 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
         # Detect font format from file data
         detected_format = detect_font_format(font)
 
+        # weight, slant and variable-ness (for telling copies of one face from different fonts)
+        os2_table = font.get("OS/2")
+        weight_class = getattr(os2_table, "usWeightClass", None) if os2_table else None
+        fs_selection = getattr(os2_table, "fsSelection", 0) if os2_table else 0
+        mac_style = getattr(head_table, "macStyle", 0) if head_table else 0
+        is_italic = bool((fs_selection & 0x01) or (fs_selection & 0x200) or (mac_style & 0x02))
+        is_variable = "fvar" in font
+
         file_size = font_path.stat().st_size
 
         return FontMetadata(
@@ -139,6 +151,9 @@ def extract_metadata(font_path: Path) -> Optional[FontMetadata]:
             file_path=str(font_path),
             original_filename=font_path.name,
             detected_format=detected_format,
+            weight_class=weight_class,
+            is_italic=is_italic,
+            is_variable=is_variable,
         )
     except Exception:
         return None
