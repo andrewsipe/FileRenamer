@@ -15,7 +15,6 @@ uv tool install "git+https://github.com/andrewsipe/FileRenamer.git"
 # later: uv tool upgrade fontrenamer
 ```
 
-Or [pipx](https://pipx.pypa.io/): `pipx install "git+https://github.com/andrewsipe/FileRenamer.git"`.
 From a clone: `uv tool install --editable .` (edits take effect immediately).
 
 Requires Python 3.9+. FontCore is vendored in `FontCore/` (see `FontCore/VENDOR.md`); there is nothing else to install.
