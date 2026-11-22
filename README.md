@@ -23,7 +23,7 @@ Requires Python 3.9+. FontCore is vendored in `FontCore/` (see `FontCore/VENDOR.
 
 | Command | What it does |
 |---|---|
-| `fontrenamer` | Rename fonts from the name table. Picks the best file when names collide (quality-scored). |
+| `fontrenamer` | Rename fonts from the name table. Keeps the best copy when two fonts want the same name (see below). |
 | `fontorganizer` | Sort fonts into family / vendor folders, with filename, vendor and name filters. |
 | `fontdeduper` | Remove byte-for-byte duplicates (SHA256). |
 
@@ -38,7 +38,17 @@ fontorganizer /path/to/fonts -n
 fontdeduper /path/to/fonts -r -n
 ```
 
-`-N` picks the filename stem: `ps` (nameID 6, default), `typo` (16+17), `full` (4), `legacy` (1+2), `uid` (3), or `best` (per file). `--show-quality` and `--explain-quality` show why one file won a collision. Run any command with `--help` for the full list.
+`-N` picks the filename stem: `ps` (nameID 6, default), `typo` (16+17), `full` (4), `legacy` (1+2), `uid` (3), or `best` (per file). `--show-quality` and `--explain-quality` show the scores behind a collision. Run any command with `--help` for the full list.
+
+## When two fonts want the same name
+
+`fontrenamer` and `fontorganizer` use one rule. First, are they copies of one font? Fonts that share a PostScript name but differ in weight, slant or size are not duplicates (the name is bad data, often a copyright line), so none of them is renamed to it and each keeps its own filename, with a warning. For real copies, the best one keeps the clean name and the rest get `~001`, `~002`:
+
+1. the higher head revision;
+2. the higher version string (nameID 5);
+3. more glyphs, languages and OpenType features;
+4. the newer modification date, but only when the version is read and the same. A newer file date can come from a conversion of an older version, so it is never trusted on its own;
+5. the earlier file name, so the result does not depend on the order the files were found.
 
 ## Development
 

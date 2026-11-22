@@ -66,17 +66,15 @@ If you delete the `_misc` backup later, keep at least:
 - Organizer/deduper may later split into their own projects; they are independent modules.
 - Still open: one conflict model for rename + organize (quality score vs version priority).
 
-## Conflict model study (2026-11-22)
+## Conflict model (2026-11-22)
 
-Question: the renamer ranks fonts that share a PostScript name by **quality score**; the organizers rank them by **version priority**. Should there be one model?
-`tools/conflict_study.py FOLDER` reads a folder (never writes) and compares them. On the intake collection (7,805 fonts, 479 unreadable or with no PostScript name):
+The renamer ranked same-name fonts by quality score and the organizers by version priority; they chose a different winner in 33 of 173 groups (19%) on the intake collection (7,805 fonts), and with `-ra` the renamer chained unrelated fonts that share a bad PostScript name (`Copyright-Weekend-Type`, `~001`, ...) into one "conflict". `tools/conflict_study.py FOLDER` reproduces the numbers (read-only).
 
-- 6,290 groups (PostScript name + format); **173 groups hold 2 or more fonts** (1,209 fonts). Of those, the two models **choose a different winner in 33 (19%)**.
-  In 24 of the 33 the revisions tie and dates (version priority) disagree with features, glyphs and languages (quality score); in 8 the quality score picks the font with the **lower** revision.
-- The renamer's default stem (`ps`) refuses placeholder names ("Skipping: contains 'Copyright'"), so 384 fonts that all carry `Copyright-STAWIX-FOUNDRY` as their PostScript name are left alone.
-  **With `-ra/--rename-all` they are not**: six different `Weekend Type` fonts become `Copyright-Weekend-Type.ttf`, `~001`, `~002`, ... The group is not a set of duplicates; the shared name is bad data, so the ranking is meaningless and each file loses its own name.
-  Stems that allow an invalid PostScript name behave the same way.
-- 28 other groups mix fonts with different full names (Times New Roman from different vendors, `Tolkien` vs `Tolkien Regular`): same name, but not obviously the same face.
-- `~NNN` is the loser suffix in both tools; `_conflictNNN` is used when a name collides with an unrelated file; the quarantine uses `_dupNNN`.
+**Decided and built (`fontrenamer/conflict.py`, shared by the renamer and the organizers; `version_priority.py` is gone):**
 
-Open decisions: (1) one model or two documented ones; (2) the ranking; (3) what to do with a group that does not look like duplicates (skip with a warning, or fall back to another stem).
+- A same-face check comes first (same weight and slant, glyph counts within 10%; a variable font may pair with a static of another weight; unknown is not evidence). A group that fails it is left alone with a warning.
+- Ranking: higher revision, higher version string (nameID 5), more coverage (glyphs, languages, features), then the newer modification date **only when the version is read and equal** (a re-saved or converted file can carry a newer date and an older version), then the file name. Creation date is not used. Our tools keep `head.modified`, so their own changes are not a "newer date"; that is intended.
+- On the intake collection after the change: 30 groups (923 fonts, mostly the shared-copyright-name families) are not duplicates and are left alone; the other 143 groups (286 fonts) agree with the old quality-score winner in 118 and with the old version-priority winner in 119. The date decides 106 (equal versions), a higher version string 16, a higher revision 7, coverage 3; 11 cannot be told apart and keep the earlier file name.
+- The same-face check needs weight and slant, which only the renamer's metadata has (the organizers' FontCore metadata has glyph count but not weight or slant), so the organizers share the ranking but not yet the check. Their PostScript-name fallback (invalid names use the filename) already avoids the shared-garbage-name chain.
+- The renamer's cache file is now `.font_rename_cache_v2.json` (it records weight and slant); an old `.font_rename_cache.json` is left in place and ignored.
+- Suffixes unchanged: `~NNN` for losers, `_conflictNNN` for a collision with an unrelated file, `_dupNNN` in quarantine.

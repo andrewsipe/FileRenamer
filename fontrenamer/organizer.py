@@ -56,7 +56,7 @@ from FontCore.core_font_utils import (
     sanitize_folder_name,
 )
 
-from .version_priority import sort_by_version_priority
+from .conflict import rank as rank_duplicates
 
 console = cs.get_console()
 
@@ -528,10 +528,10 @@ def extract_font_organization_data(
 
         ps_name_groups[ps_name].append(metadata)
 
-    # Assign final names with version priority
+    # Assign final names: the best copy keeps the clean name, the rest get ~001, ~002 (fontrenamer/conflict.py)
     rename_map: Dict[Path, str] = {}
     for ps_name, metadata_list in ps_name_groups.items():
-        sorted_fonts = sort_by_version_priority(metadata_list)
+        sorted_fonts = rank_duplicates(metadata_list)
         first_path = Path(sorted_fonts[0].file_path).resolve()
         ext = first_path.suffix.lower()
 

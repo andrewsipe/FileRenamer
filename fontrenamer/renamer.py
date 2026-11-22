@@ -59,6 +59,7 @@ except ImportError:
 
 # Core module imports
 import FontCore.core_console_styles as cs  # noqa: E402
+from fontrenamer.conflict import cluster_same_face, rank as rank_duplicates  # noqa: E402
 from FontCore.core_file_collector import collect_font_files  # noqa: E402
 from FontCore.core_font_extension import (  # noqa: E402
     detect_font_format as detect_font_format_from_file,
@@ -85,7 +86,7 @@ console = cs.get_console()
 # Constants
 # ============================================================================
 
-INDEX_FILENAME = ".font_rename_cache.json"
+INDEX_FILENAME = ".font_rename_cache_v2.json"  # v2: records weight and slant for the same-face check
 TRANSACTION_FILENAME = ".font_rename_transaction.json"
 FONT_EXTENSIONS = {".ttf", ".otf", ".woff", ".woff2"}
 
@@ -243,6 +244,8 @@ class FontMetadata:
 
     # Variable font detection
     is_variable: bool = False
+    weight_class: Optional[int] = None  # OS/2 usWeightClass (for the same-face check)
+    is_italic: Optional[bool] = None  # fsSelection or macStyle italic/oblique bit
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -265,6 +268,8 @@ class FontMetadata:
         # Handle backward compatibility: is_variable may not exist in old cache files
         if "is_variable" not in data:
             data["is_variable"] = False
+        data.setdefault("weight_class", None)
+        data.setdefault("is_italic", None)
         # file_mtime may not exist in old cache files (then we validate by size only)
         if "file_mtime" not in data:
             data["file_mtime"] = None
@@ -774,6 +779,12 @@ def extract_metadata(
         # Variable font detection (use LENIENT mode to catch technically valid variable fonts)
         is_variable = is_variable_font(font, mode=VariableFontMode.LENIENT)
 
+        os2_table = font.get("OS/2")
+        weight_class = getattr(os2_table, "usWeightClass", None) if os2_table else None
+        fs_selection = getattr(os2_table, "fsSelection", 0) if os2_table else 0
+        mac_style = getattr(head_table, "macStyle", 0) if head_table else 0
+        is_italic = bool((fs_selection & 0x01) or (fs_selection & 0x200) or (mac_style & 0x02))
+
         file_stat = font_path.stat()
         file_size = file_stat.st_size
         file_mtime = file_stat.st_mtime
@@ -801,6 +812,8 @@ def extract_metadata(
             legacy_subfamily=legacy_subfamily,
             unique_font_id=unique_font_id,
             is_variable=is_variable,
+            weight_class=weight_class,
+            is_italic=is_italic,
         )
     except Exception as e:
         if not silent and console:
@@ -1559,7 +1572,22 @@ def assign_final_names(
                 pick_cache[i] = resolve_renamer_stem(meta, stem_source, force_family)
             return pick_cache[i]
 
-        sorted_fonts = sort_by_quality_score(metadata_list)
+        # One conflict model (fontrenamer/conflict.py): first ask whether these are copies of one font at all.
+        # A shared PostScript name on fonts of different weight or slant is bad data, not a duplicate, so nothing
+        # is ranked and each file keeps its own name.
+        if len(metadata_list) > 1 and len(cluster_same_face(metadata_list)) > 1:
+            for meta in metadata_list:
+                rename_map[normalize_path(Path(meta.file_path))] = meta.original_filename or Path(meta.file_path).name
+            if console:
+                cs.StatusIndicator("warning").add_message(
+                    f"{group_key.split('|')[0]} is the name of {len(metadata_list)} different fonts "
+                    "(they differ in weight, slant or size), so none of them was renamed to it"
+                ).emit()
+            continue
+
+        sorted_fonts = rank_duplicates(metadata_list)
+        for ranked in sorted_fonts:  # --show-quality still shows the old score
+            ranked.quality_score = ranked.calculate_quality_score(sorted_fonts)
 
         static_fonts = [f for f in sorted_fonts if not f.is_variable]
         variable_fonts = [f for f in sorted_fonts if f.is_variable]
