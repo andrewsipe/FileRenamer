@@ -65,3 +65,18 @@ If you delete the `_misc` backup later, keep at least:
 - Byte_Comparator and Variation_Analyzer retired (git history keeps them).
 - Organizer/deduper may later split into their own projects; they are independent modules.
 - Still open: one conflict model for rename + organize (quality score vs version priority).
+
+## Conflict model study (2026-11-22)
+
+Question: the renamer ranks fonts that share a PostScript name by **quality score**; the organizers rank them by **version priority**. Should there be one model?
+`tools/conflict_study.py FOLDER` reads a folder (never writes) and compares them. On the intake collection (7,805 fonts, 479 unreadable or with no PostScript name):
+
+- 6,290 groups (PostScript name + format); **173 groups hold 2 or more fonts** (1,209 fonts). Of those, the two models **choose a different winner in 33 (19%)**.
+  In 24 of the 33 the revisions tie and dates (version priority) disagree with features, glyphs and languages (quality score); in 8 the quality score picks the font with the **lower** revision.
+- The renamer's default stem (`ps`) refuses placeholder names ("Skipping: contains 'Copyright'"), so 384 fonts that all carry `Copyright-STAWIX-FOUNDRY` as their PostScript name are left alone.
+  **With `-ra/--rename-all` they are not**: six different `Weekend Type` fonts become `Copyright-Weekend-Type.ttf`, `~001`, `~002`, ... The group is not a set of duplicates; the shared name is bad data, so the ranking is meaningless and each file loses its own name.
+  Stems that allow an invalid PostScript name behave the same way.
+- 28 other groups mix fonts with different full names (Times New Roman from different vendors, `Tolkien` vs `Tolkien Regular`): same name, but not obviously the same face.
+- `~NNN` is the loser suffix in both tools; `_conflictNNN` is used when a name collides with an unrelated file; the quarantine uses `_dupNNN`.
+
+Open decisions: (1) one model or two documented ones; (2) the ranking; (3) what to do with a group that does not look like duplicates (skip with a warning, or fall back to another stem).
