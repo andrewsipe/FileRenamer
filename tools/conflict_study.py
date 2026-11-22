@@ -4,7 +4,11 @@ the renamer's quality-score ranking with the organizers' version-priority rankin
     python tools/conflict_study.py FOLDER
 
 Never writes to FOLDER. Prints counts and a few examples; nothing is saved."""
+import collections
+import re
+import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fontrenamer.renamer import extract_metadata, sort_by_quality_score
 from fontrenamer.version_priority import sort_by_version_priority
