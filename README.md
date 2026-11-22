@@ -1,6 +1,6 @@
 # FontRenamer
 
-**Version 0.2.2**
+**Version 0.3.0**
 
 Rename font files from their own name tables, and keep the best copy when two fonts want the same name. Two smaller tools in the same package organize a collection into folders and remove exact duplicates.
 
