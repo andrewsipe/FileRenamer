@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.2] - 2026-11-21
+
+### Changed
+- Vendored FontCore refreshed to v0.4.0 (14 modules). The renamer reads existing name records and uses FontCore only to clean PostScript names and read variable-font filenames. For 5,377 filenames and name strings from a 1,539-font library and a 802-font intake sample, `sanitize_postscript`, `filename_has_variable_marker`, `parse_variable_filename` and `format_variable_filename` return exactly what they did in 0.2.1, so no rename changes.
+
 ## [0.2.1] - 2026-11-21
 
 ### Changed

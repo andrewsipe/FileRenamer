@@ -147,7 +147,12 @@ import re
 from dataclasses import dataclass
 from typing import List, Tuple
 
-from FontCore.core_font_style_dictionaries import join_mono_compounds, join_style_compounds
+from FontCore.core_font_style_dictionaries import (
+    WEIGHT_POSITIONS,
+    apply_weight_override,
+    join_mono_compounds,
+    join_style_compounds,
+)
 
 
 # PascalCase tokenization pattern components:
@@ -492,6 +497,33 @@ def _split_at_hyphen(base: str) -> Tuple[str, str]:
     return base.split("-", 1)
 
 
+# A run-wide choice the user makes with --weight-word / --weight-position. Every name built from the
+# filename style then sees the same style, so IDs 1, 2, 4, 16 and 17 cannot disagree.
+_WEIGHT_OVERRIDE: dict = {"word": None, "position": "last"}
+
+
+def set_weight_override(word: str | None, position: str = "last") -> None:
+    """Name the weight for styles that have none (word "none" adds nothing and silences the note)."""
+    if position not in WEIGHT_POSITIONS:
+        raise ValueError(f"weight position must be one of {WEIGHT_POSITIONS}, not {position!r}")
+    _WEIGHT_OVERRIDE["word"] = (word or "").strip() or None
+    _WEIGHT_OVERRIDE["position"] = position
+
+
+def clear_weight_override() -> None:
+    _WEIGHT_OVERRIDE["word"] = None
+    _WEIGHT_OVERRIDE["position"] = "last"
+
+
+def weight_override_note_silenced() -> bool:
+    """True when the user answered the missing-weight question (a word, or "none")."""
+    return _WEIGHT_OVERRIDE["word"] is not None
+
+
+def _with_weight_override(subfamily: str) -> str:
+    return apply_weight_override(subfamily, _WEIGHT_OVERRIDE["word"], _WEIGHT_OVERRIDE["position"]) if subfamily else subfamily
+
+
 def split_family_subfamily(
     input_name: str, *, strip_extension: bool = True
 ) -> Tuple[str, str]:
@@ -508,7 +540,7 @@ def split_family_subfamily(
     left, right = _split_at_hyphen(base)
 
     family = join_mono_compounds(format_pascal_words(left))
-    subfamily = join_style_compounds(format_pascal_words(right)) if right else ""
+    subfamily = _with_weight_override(join_style_compounds(format_pascal_words(right)) if right else "")
 
     return family, subfamily
 
@@ -553,7 +585,7 @@ def parse_filename(input_name: str, *, strip_extension: bool = True) -> ParsedNa
         family_raw=left,
         subfamily_raw=right,
         family=join_mono_compounds(format_pascal_words(left)),
-        subfamily=join_style_compounds(format_pascal_words(right)) if right else "",
+        subfamily=_with_weight_override(join_style_compounds(format_pascal_words(right)) if right else ""),
     )
 
 
