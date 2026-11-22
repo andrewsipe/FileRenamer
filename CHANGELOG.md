@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-11-22
+
+FontCore 0.6.0 vendored (see `FontCore/VENDOR.md`).
+
+**Behavior change:** `fontorganizer` now leaves fonts that share a name but differ in weight, slant or size under their own filenames.
 
 ### Changed
 - `fontorganizer` now has the same-face check the renamer got in 0.3.0: fonts that share a PostScript name but differ in weight, slant or size are not ranked, and each keeps its own filename (with a warning). FontCore refreshed so its font metadata records weight, slant and variable-ness.
