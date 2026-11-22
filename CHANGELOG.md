@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Help in plain words for `fontrenamer`, `fontorganizer` and `fontdeduper` (standard flag wording, no old script names), and each ends with a Heads up line: the renamer renames in place with no backup, the organizer moves and renames into the output folder, the deduper moves duplicates to the trash folder (recoverable). Preview first with `-n`.
+
 ## [0.3.0] - 2026-11-22
 
 **Behavior change:** which font keeps the clean name when several want it can differ from 0.2.x, and fonts that share a name but are not copies of one font are left alone (see Changed).

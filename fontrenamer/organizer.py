@@ -1147,6 +1147,8 @@ def main():
         description="Organize your font collection into a clean directory structure",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Heads up: fonts are moved into the output folder and renamed, with no backup. Work on copies, or preview first with -n.
+
 QUICK START:
   %(prog)s /path/to/fonts/                    # Organize fonts alphabetically (A-Z)
   %(prog)s /path/to/fonts/ -n                 # Preview what will happen first
@@ -1184,7 +1186,7 @@ TIPS:
         "-n",
         "--dry-run",
         action="store_true",
-        help="Preview changes without moving any files (safe mode)",
+        help="preview only; change nothing",
     )
     basic_group.add_argument(
         "-o",
@@ -1196,18 +1198,18 @@ TIPS:
         "-r",
         "--recursive",
         action="store_true",
-        help="Look inside subfolders for fonts (default: only top-level folder)",
+        help="include subfolders (default: only the top-level folder)",
     )
     basic_group.add_argument(
         "-v",
         "--verbose",
         action="store_true",
-        help="Show detailed progress as files are processed",
+        help="show more detail",
     )
     basic_group.add_argument(
         "--no-preview",
         action="store_true",
-        help="Skip the preview and start immediately",
+        help="skip the preview and start right away",
     )
 
     # Organization options

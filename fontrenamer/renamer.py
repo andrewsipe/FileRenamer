@@ -2786,9 +2786,11 @@ def main():
     if current_process().name != "MainProcess":
         return 0
     parser = argparse.ArgumentParser(
-        description="Rename font files using OpenType name-table data and quality-aware deduplication",
+        description="Rename font files from their own name records. When several fonts want the same name, the best copy keeps it (see the README)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Heads up: fonts are renamed in place and there is no backup. Work on copies, or preview first with -n. Fonts that share a name but are not copies of one font are left alone.
+
 Examples:
   %(prog)s /path/to/fonts/              # Rename all fonts in directory
   %(prog)s font1.otf font2.otf         # Rename specific files
@@ -2807,40 +2809,40 @@ Examples:
         help="Font files or directories to process (default: current directory)",
     )
     parser.add_argument(
-        "-r", "--recursive", action="store_true", help="Process directories recursively"
+        "-r", "--recursive", action="store_true", help="include subfolders"
     )
     parser.add_argument(
         "-n",
         "--dry-run",
         action="store_true",
-        help="Preview changes without renaming files",
+        help="preview only; change nothing",
     )
     parser.add_argument(
         "-ra",
         "--rename-all",
         action="store_true",
-        help="Rename files even with invalid PostScript names",
+        help="rename files even when their PostScript name is invalid (fonts that share a name but differ in weight, slant or size are still left alone)",
     )
     parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
-        help="Show detailed processing information",
+        help="show more detail",
     )
     parser.add_argument(
         "--no-progress",
         action="store_true",
-        help="Disable progress bar (or plain text progress) while reading font metadata",
+        help="no progress bar while reading the fonts",
     )
     parser.add_argument(
         "--no-preview",
         action="store_true",
-        help="Skip preflight preview and proceed directly",
+        help="skip the preview and start right away",
     )
     parser.add_argument(
         "--show-quality",
         action="store_true",
-        help="Display quality scores and details in preview",
+        help="show each font's score in the preview",
     )
     parser.add_argument(
         "-N",
@@ -2855,7 +2857,7 @@ Examples:
             "typo=16+17 typographic; "
             "full=4 full font name (spaces stripped); "
             "legacy=1+2 legacy family/style; "
-            "uid=nameID 3 (FontCore sanitize_postscript); "
+            "uid=nameID 3 (unique ID, cleaned); "
             "best=per-file typo→ps→uid→full→legacy, else keep original name. "
             "Aliases: postscript→ps, typographic→typo."
         ),
@@ -2868,7 +2870,7 @@ Examples:
     parser.add_argument(
         "--explain-quality",
         action="store_true",
-        help="Show detailed quality score comparisons explaining why one font wins over another",
+        help="explain why one copy won over another",
     )
     parser.add_argument(
         "-ff",
@@ -2882,7 +2884,7 @@ Examples:
     parser.add_argument(
         "--recover",
         action="store_true",
-        help="Recover orphaned temp files from previous interrupted runs",
+        help="restore files left under temporary names by an interrupted run",
     )
 
     args = parser.parse_args()

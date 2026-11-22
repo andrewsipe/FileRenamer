@@ -876,6 +876,8 @@ def main():
         description="Remove exact byte-for-byte duplicate font files using SHA256",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Heads up: duplicates are moved to the trash folder, not deleted, so you can get them back. Preview first with -n.
+
 Examples:
   %(prog)s /path/to/fonts/                    # Deduplicate fonts in directory
   %(prog)s font1.otf font2.otf               # Check specific files
@@ -898,13 +900,13 @@ Keep Strategies:
         help="Font files or directories to process (default: current directory)",
     )
     parser.add_argument(
-        "-r", "--recursive", action="store_true", help="Process directories recursively"
+        "-r", "--recursive", action="store_true", help="include subfolders"
     )
     parser.add_argument(
         "-n",
         "--dry-run",
         action="store_true",
-        help="Preview what would be removed without moving files",
+        help="preview only; change nothing",
     )
     parser.add_argument(
         "-s",
@@ -924,7 +926,7 @@ Keep Strategies:
         "-v",
         "--verbose",
         action="store_true",
-        help="Show detailed processing information",
+        help="show more detail",
     )
     parser.add_argument(
         "--compare-dirs",
