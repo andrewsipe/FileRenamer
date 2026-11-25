@@ -1408,7 +1408,18 @@ TIPS:
                     f"{cs.indent(1)}... and {cs.fmt_count(len(stats.errors) - 10)} more errors"
                 )
 
-    return 0 if stats.organized > 0 or stats.skipped == stats.total_files else 1
+    problems = len(stats.errors) + stats.quarantined
+    cs.fmt_processing_summary(
+        dry_run=getattr(args, "dry_run", False),
+        updated=stats.organized,
+        unchanged=None,
+        errors=problems,
+        skipped=max(stats.skipped - len(stats.errors), 0),
+        verb="Organized",
+        would_verb="Would organize",
+        console=console,
+    )
+    return 1 if problems or (stats.organized == 0 and stats.skipped != stats.total_files) else 0
 
 
 if __name__ == "__main__":

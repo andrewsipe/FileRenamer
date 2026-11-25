@@ -3059,7 +3059,18 @@ Examples:
             border_style="green",
         )
 
-    return 0
+    problems = len(total_stats.errors) + total_stats.invalid
+    cs.fmt_processing_summary(
+        dry_run=args.dry_run,
+        updated=total_stats.renamed,
+        unchanged=max(total_stats.total_files - total_stats.renamed - total_stats.invalid - total_stats.skipped, 0),
+        errors=problems,
+        skipped=max(total_stats.skipped - len(total_stats.errors), 0),
+        verb="Renamed",
+        would_verb="Would rename",
+        console=console,
+    )
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

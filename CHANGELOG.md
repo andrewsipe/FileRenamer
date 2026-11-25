@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0] - 2026-11-25
+
+FontCore 0.8.2 vendored (see `FontCore/VENDOR.md`).
+
+### Changed
+- `fontrenamer`, `fontorganizer` and `fontdeduper` end with one sentence ("Renamed 3, unchanged 1, 1 problem.") under the Summary panel; the chip turns to a warning when anything went wrong.
+- The renamer exits 1 when a font could not be read or renamed (it always exited 0). The organizer counts quarantined and failed files as problems, and the deduper exits 1 on errors in every mode.
+
 ## [0.4.1] - 2026-11-25
 
 FontCore 0.7.0 vendored (see `FontCore/VENDOR.md`).

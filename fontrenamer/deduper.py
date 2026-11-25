@@ -1124,6 +1124,15 @@ Keep Strategies:
             if errors:
                 show_final_errors(DeduplicationStats(errors=errors), args.verbose)
 
+        cs.fmt_processing_summary(
+            dry_run=getattr(args, "dry_run", False),
+            updated=files_removed,
+            unchanged=None,
+            errors=len(errors),
+            verb="Removed",
+            would_verb="Would remove",
+            console=console,
+        )
         return 0 if not errors else 1
 
     # Default to current directory if no paths given
@@ -1218,7 +1227,16 @@ Keep Strategies:
 
         show_final_errors(total_stats, args.verbose)
 
-    return 0
+    cs.fmt_processing_summary(
+        dry_run=getattr(args, "dry_run", False),
+        updated=total_stats.files_moved,
+        unchanged=None,
+        errors=len(total_stats.errors),
+        verb="Removed",
+        would_verb="Would remove",
+        console=console,
+    )
+    return 1 if total_stats.errors else 0
 
 
 if __name__ == "__main__":
