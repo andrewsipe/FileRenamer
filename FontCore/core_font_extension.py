@@ -97,6 +97,11 @@ def validate_and_fix_extension(
     if actual_format == "ERROR":
         return False, None
 
+    # A collection (TTC) is never renamed: ".ttc" is an extension the tools do not collect, so the file would drop
+    # out of every later run. Leave it alone; describe_extension_mismatch says what it is.
+    if actual_format == "TTC":
+        return False, None
+
     # UNKNOWN format - can't validate, assume valid
     if actual_format == "UNKNOWN":
         return True, None
@@ -140,3 +145,55 @@ def validate_and_fix_extension(
 
 
 __all__ = ["detect_font_format", "validate_and_fix_extension"]
+
+
+def describe_extension_mismatch(filepath: Path | str) -> Optional[str]:
+    """One sentence when the extension does not match the font's real format, else None. Never renames anything."""
+    filepath = Path(filepath)
+    actual = detect_font_format(filepath)
+    if actual in ("ERROR", "UNKNOWN"):
+        return None
+    current = filepath.suffix.upper()[1:] if filepath.suffix else ""
+    if actual == current:
+        return None
+    if actual == "TTC":
+        return (
+            f"{filepath.name} is a font collection (TTC), not a single font; the tools do not read collections, "
+            "so it was left alone"
+        )
+    shown = filepath.suffix or "(none)"
+    return f"{filepath.name} is a {actual} font but its extension is {shown}"
+
+
+def is_readable(filepath: Path | str) -> Tuple[bool, Optional[str]]:
+    """Open the font and read its table directory. (True, None) when it opens, else (False, reason).
+
+    detect_font_format only reads four bytes, so a file cut off right after a valid header still says "TTF";
+    this is the check that tells it is damaged.
+    """
+    filepath = Path(filepath)
+    if not filepath.exists():
+        return False, "the file does not exist"
+    try:
+        size = filepath.stat().st_size
+    except OSError as exc:
+        return False, f"cannot read the file: {exc}"
+    if size < 12:
+        return False, f"too small to be a font ({size} bytes)"
+    try:
+        from fontTools.ttLib import TTFont
+
+        font = TTFont(str(filepath), lazy=True, recalcTimestamp=False)
+        try:
+            reader = getattr(font, "reader", None)
+            tables = getattr(reader, "tables", None)
+            if tables is not None and len(tables) == 0:
+                return False, "the font has no tables"
+            if "head" not in font and "CFF " not in font and "glyf" not in font:
+                return False, "the font has none of the core tables (head, glyf, CFF)"
+            font["head"] if "head" in font else None  # read one table so a bad directory fails here
+        finally:
+            font.close()
+    except Exception as exc:  # fontTools raises many kinds of errors for a damaged file
+        return False, f"{type(exc).__name__}: {exc}"[:160]
+    return True, None

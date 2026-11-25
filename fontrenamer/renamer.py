@@ -64,6 +64,7 @@ from FontCore.core_file_collector import collect_font_files  # noqa: E402
 from FontCore.core_font_extension import (  # noqa: E402
     detect_font_format as detect_font_format_from_file,
     validate_and_fix_extension,
+    describe_extension_mismatch,
 )
 from FontCore.core_variable_font_detection import (  # noqa: E402
     is_variable_font,
@@ -2958,6 +2959,10 @@ Examples:
                 ).emit()
             validated_paths.append(str(fixed_path))
         else:
+            if not is_valid and console:
+                problem = describe_extension_mismatch(path)  # for example a TTC, which is never renamed
+                if problem:
+                    cs.StatusIndicator("warning").add_message(problem).emit()
             validated_paths.append(path_str)
     font_paths = validated_paths
 

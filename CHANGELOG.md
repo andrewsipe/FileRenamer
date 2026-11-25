@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1] - 2026-11-25
+
+FontCore 0.7.0 vendored (see `FontCore/VENDOR.md`).
+
+### Changed
+- File collection follows one set of rules: macOS junk (`._*`, `__MACOSX`) and hidden files and folders are skipped, each real file is listed once (a symlink and its target are one file), and a path that does not exist gets a warning. Binary formats are the default; this tool asks for TTX where it handles it. `fontdeduper` no longer renames a file whose extension does not match its format: it says so and carries on (only `fontrenamer` renames). A font collection (TTC) named `.ttf` is no longer renamed to `.ttc` (which no tool reads): it is left alone with a warning.
+
 ## [0.4.0] - 2026-11-22
 
 FontCore 0.6.0 vendored (see `FontCore/VENDOR.md`).

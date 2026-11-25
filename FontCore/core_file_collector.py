@@ -1,15 +1,20 @@
 """
 core_file_collector: shared helpers to collect font files from files/dirs.
 
-Features:
-- Supports TTF, OTF, WOFF, WOFF2, TTX by default
-- Optional recursive directory scanning
-- Case-insensitive extension matching
-- De-duplicates and returns sorted list of absolute paths
+One walker sits behind every function here, so they all follow the same rules (DECISIONS.md, area 3):
+
+- Not recursive unless asked (`recursive=True`).
+- Binary formats only by default (TTF, OTF, WOFF, WOFF2); `.ttx` when a tool passes `allowed_extensions=SUPPORTED_EXTENSIONS`.
+- macOS junk (`._*` files, `__MACOSX` folders) and hidden files and folders are skipped unless `include_hidden=True`.
+  A file or folder named directly is always honoured. Folders are never skipped by name (a tool that creates output
+  folders decides for itself what to do with them).
+- Each real file once: a symlink and its target, or a folder given twice, give one path (resolved).
+- `on_missing(path)` is called for an input that does not exist; `on_unsupported(path)` for a recognised font file the
+  tools cannot read (`.ttc`, `.dfont`, `.eot`), so a tool can say what it left out instead of staying silent.
+- Case-insensitive extension matching; returns sorted absolute paths.
 
 Demo and Testing:
     Run 'python CoreDemoTool.py collector --help' to see examples and test with real paths.
-    The demo tool shows supported extensions and file collection capabilities.
 
 Maintenance Note:
     When adding new file collection features to this module, update CoreDemoTool.py to showcase
@@ -18,14 +23,18 @@ Maintenance Note:
 
 from __future__ import annotations
 
-import glob
 import os
 import time
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Set, TypedDict
 
 
-SUPPORTED_EXTENSIONS: Set[str] = {".ttf", ".otf", ".woff", ".woff2", ".ttx"}
+BINARY_EXTENSIONS: Set[str] = {".ttf", ".otf", ".woff", ".woff2"}
+# Everything the tools can read: the binary formats plus TTX (XML). TTX is opt-in.
+SUPPORTED_EXTENSIONS: Set[str] = BINARY_EXTENSIONS | {".ttx"}
+# Font files the tools do not read; counted through `on_unsupported`, never returned.
+RECOGNISED_UNSUPPORTED_EXTENSIONS: Set[str] = {".ttc", ".dfont", ".eot"}
+_JUNK_DIRS = {"__macosx"}
 
 
 class ProgressDict(TypedDict, total=False):
@@ -63,47 +72,6 @@ def _matches_extension(path: Path, allowed_extensions: Set[str]) -> bool:
     return ext in allowed_lower
 
 
-def _glob_patterns_for_extension(
-    base_path: Path, ext: str, recursive: bool, include_uppercase: bool
-) -> List[str]:
-    """Generate glob patterns for a single extension."""
-    ext_low = ext.lower()
-    patterns = []
-
-    prefix = "**/" if recursive else ""
-    patterns.append(str(base_path / f"{prefix}*{ext_low}"))
-
-    if include_uppercase:
-        patterns.append(str(base_path / f"{prefix}*{ext_low.upper()}"))
-
-    return patterns
-
-
-def _collect_from_directory(
-    path_obj: Path, allowed: Set[str], recursive: bool, include_uppercase: bool
-) -> Set[str]:
-    """Collect all matching files from a directory."""
-    results: Set[str] = set()
-
-    for ext in allowed:
-        patterns = _glob_patterns_for_extension(
-            path_obj, ext, recursive, include_uppercase
-        )
-        for pattern in patterns:
-            results.update(glob.glob(pattern, recursive=recursive))
-
-    return results
-
-
-def _safe_absolute_path(path: str, allowed: Set[str]) -> Optional[str]:
-    """Convert to absolute path if it matches allowed extensions."""
-    try:
-        po = Path(path)
-        return str(po) if _matches_extension(po, allowed) else None
-    except Exception:
-        return None
-
-
 class ProgressDict(TypedDict, total=False):
     """Type definition for progress callback dictionary."""
 
@@ -114,47 +82,44 @@ class ProgressDict(TypedDict, total=False):
     error: str  # optional
 
 
+def _is_hidden_name(name: str) -> bool:
+    return name.startswith(".")
+
+
 def iter_font_files(
     paths: Iterable[str | Path],
-    recursive: bool = True,
+    recursive: bool = False,
     *,
     allowed_extensions: Optional[Set[str]] = None,
-    include_uppercase: bool = True,
+    include_uppercase: bool = True,  # kept for older callers; matching is always case-insensitive
+    include_hidden: bool = False,
     on_progress: Optional[Callable[[ProgressDict], None]] = None,
+    on_missing: Optional[Callable[[Path], None]] = None,
+    on_unsupported: Optional[Callable[[Path], None]] = None,
 ) -> Iterator[str]:
-    """Iterate over font file paths as they are discovered, with optional progress callbacks.
+    """Yield font file paths as they are found (absolute, resolved, each real file once).
 
     - paths: files and/or directories
-    - recursive: recurse into directories (default True for progress use case)
-    - allowed_extensions: override supported extensions; compared case-insensitively
-    - include_uppercase: when globbing, also search uppercase extension variants
-    - on_progress: optional callback with progress dict: {'dirs_scanned', 'files_scanned', 'matches_found', 'current_dir'}
-
-    Yields:
-        Absolute file paths as they are discovered
+    - recursive: go into subfolders (default False)
+    - allowed_extensions: override the default set (BINARY_EXTENSIONS); compared case-insensitively
+    - include_hidden: also walk hidden folders and return hidden files and macOS junk (`._*`, `__MACOSX`)
+    - on_progress: callback with {'dirs_scanned', 'files_scanned', 'matches_found', 'current_dir'}
+    - on_missing / on_unsupported: see the module docstring
     """
-    allowed = allowed_extensions or SUPPORTED_EXTENSIONS
-    path_objs = _normalize_paths(paths)
-
-    # Progress tracking
-    dirs_scanned = 0
-    files_scanned = 0
-    matches_found = 0
-    last_progress_time = 0
+    allowed = allowed_extensions or BINARY_EXTENSIONS
+    unsupported = {e.lower() for e in RECOGNISED_UNSUPPORTED_EXTENSIONS} - {e.lower() for e in allowed}
+    seen: Set[str] = set()
+    dirs_scanned = files_scanned = matches_found = 0
+    last_progress_time = 0.0
     current_dir = ""
 
-    def _should_report_progress() -> bool:
-        """Throttle progress updates to every 200 files or 100ms"""
+    def _report(force: bool = False) -> None:
         nonlocal last_progress_time
+        if not on_progress:
+            return
         now = time.time()
-        if files_scanned % 200 == 0 or (now - last_progress_time) > 0.1:
+        if force or files_scanned % 200 == 0 or (now - last_progress_time) > 0.1:
             last_progress_time = now
-            return True
-        return False
-
-    def _report_progress():
-        """Report current progress if callback provided"""
-        if on_progress and _should_report_progress():
             on_progress(
                 {
                     "dirs_scanned": dirs_scanned,
@@ -164,106 +129,93 @@ def iter_font_files(
                 }
             )
 
-    for path_obj in path_objs:
+    def _consider(file_path: Path):
+        """Return the path to yield, or None."""
+        nonlocal files_scanned, matches_found
+        files_scanned += 1
+        if _matches_extension(file_path, allowed):
+            try:
+                real = str(file_path.resolve())
+            except OSError:
+                return None
+            if real in seen:
+                return None
+            seen.add(real)
+            matches_found += 1
+            return real
+        if on_unsupported and file_path.suffix.lower() in unsupported:
+            on_unsupported(file_path)
+        return None
+
+    for path_obj in _normalize_paths(paths):
         try:
             if path_obj.is_file():
-                files_scanned += 1
-                if _matches_extension(path_obj, allowed):
-                    matches_found += 1
-                    yield str(path_obj.resolve())
-                _report_progress()
+                found = _consider(path_obj)  # a file named directly is honoured, hidden or not
+                if found:
+                    yield found
+                _report()
             elif path_obj.is_dir():
                 if recursive:
-                    # Use os.walk for better performance than glob
-                    try:
-                        for root, dirs, files in os.walk(path_obj):
-                            current_dir = root
-                            dirs_scanned += 1
-
-                            for filename in files:
-                                files_scanned += 1
-                                file_path = Path(root) / filename
-
-                                if _matches_extension(file_path, allowed):
-                                    matches_found += 1
-                                    yield str(file_path.resolve())
-
-                                _report_progress()
-                    except (PermissionError, OSError) as e:
-                        # Report error but continue with other directories
-                        if on_progress:
-                            on_progress(
-                                {
-                                    "dirs_scanned": dirs_scanned,
-                                    "files_scanned": files_scanned,
-                                    "matches_found": matches_found,
-                                    "current_dir": str(path_obj),
-                                    "error": str(e),
-                                }
-                            )
-                        continue  # Skip this directory, continue with others
+                    for root, dirs, files in os.walk(path_obj):
+                        current_dir = root
+                        dirs_scanned += 1
+                        if not include_hidden:
+                            dirs[:] = [d for d in dirs if not _is_hidden_name(d) and d.lower() not in _JUNK_DIRS]
+                        for filename in sorted(files):
+                            if not include_hidden and _is_hidden_name(filename):
+                                continue
+                            found = _consider(Path(root) / filename)
+                            if found:
+                                yield found
+                            _report()
                 else:
-                    # Non-recursive: check files in directory only
                     current_dir = str(path_obj)
                     dirs_scanned += 1
-                    try:
-                        for filename in os.listdir(path_obj):
-                            files_scanned += 1
-                            file_path = path_obj / filename
-
-                            if file_path.is_file() and _matches_extension(
-                                file_path, allowed
-                            ):
-                                matches_found += 1
-                                yield str(file_path.resolve())
-
-                            _report_progress()
-                    except (PermissionError, OSError):
-                        continue
-        except Exception:
+                    for filename in sorted(os.listdir(path_obj)):
+                        if not include_hidden and _is_hidden_name(filename):
+                            continue
+                        file_path = path_obj / filename
+                        if file_path.is_file():
+                            found = _consider(file_path)
+                            if found:
+                                yield found
+                        _report()
+            elif on_missing is not None:
+                on_missing(path_obj)
+        except (PermissionError, OSError):
             continue
 
-    # Final progress report
     if on_progress:
-        on_progress(
-            {
-                "dirs_scanned": dirs_scanned,
-                "files_scanned": files_scanned,
-                "matches_found": matches_found,
-                "current_dir": "Complete",
-            }
-        )
+        current_dir = "Complete"
+        _report(force=True)
 
 
 def collect_font_files_with_progress(
     paths: Iterable[str | Path],
-    recursive: bool = True,
+    recursive: bool = False,
     *,
     allowed_extensions: Optional[Set[str]] = None,
     include_uppercase: bool = True,
+    include_hidden: bool = False,
     on_progress: Optional[Callable[[ProgressDict], None]] = None,
+    on_missing: Optional[Callable[[Path], None]] = None,
+    on_unsupported: Optional[Callable[[Path], None]] = None,
 ) -> List[str]:
-    """Collect font file paths with progress callbacks (wrapper around iter_font_files).
-
-    - paths: files and/or directories
-    - recursive: recurse into directories
-    - allowed_extensions: override supported extensions; compared case-insensitively
-    - include_uppercase: when globbing, also search uppercase extension variants
-    - on_progress: optional callback with progress dict: {'dirs_scanned', 'files_scanned', 'matches_found', 'current_dir'}
-
-    Returns:
-        Sorted list of absolute file paths
-    """
-    results = list(
-        iter_font_files(
-            paths=paths,
-            recursive=recursive,
-            allowed_extensions=allowed_extensions,
-            include_uppercase=include_uppercase,
-            on_progress=on_progress,
+    """Collect font file paths with progress callbacks. Sorted absolute paths; same rules as iter_font_files."""
+    return sorted(
+        set(
+            iter_font_files(
+                paths=paths,
+                recursive=recursive,
+                allowed_extensions=allowed_extensions,
+                include_uppercase=include_uppercase,
+                include_hidden=include_hidden,
+                on_progress=on_progress,
+                on_missing=on_missing,
+                on_unsupported=on_unsupported,
+            )
         )
     )
-    return sorted(set(results))
 
 
 def collect_font_files(
@@ -272,45 +224,25 @@ def collect_font_files(
     *,
     allowed_extensions: Optional[Set[str]] = None,
     include_uppercase: bool = True,
+    include_hidden: bool = False,
+    on_missing: Optional[Callable[[Path], None]] = None,
+    on_unsupported: Optional[Callable[[Path], None]] = None,
 ) -> List[str]:
-    """Collect font file paths from a list of files and/or directories.
-
-    - paths: files and/or directories
-    - recursive: recurse into directories
-    - allowed_extensions: override supported extensions; compared case-insensitively
-    - include_uppercase: when globbing, also search uppercase extension variants
-    """
-    allowed = allowed_extensions or SUPPORTED_EXTENSIONS
-    path_objs = _normalize_paths(paths)
-    results: Set[str] = set()
-
-    for path_obj in path_objs:
-        try:
-            if path_obj.is_file():
-                if _matches_extension(path_obj, allowed):
-                    results.add(str(path_obj))
-            elif path_obj.is_dir():
-                results.update(
-                    _collect_from_directory(
-                        path_obj, allowed, recursive, include_uppercase
-                    )
-                )
-        except Exception:
-            continue
-
-    # Filter and convert to absolute paths
-    filtered = [
-        abs_path
-        for p in results
-        if (abs_path := _safe_absolute_path(p, allowed)) is not None
-    ]
-
-    return sorted(set(filtered))
+    """Collect font file paths from files and/or directories. Sorted absolute paths; same rules as iter_font_files."""
+    return collect_font_files_with_progress(
+        paths,
+        recursive,
+        allowed_extensions=allowed_extensions,
+        include_uppercase=include_uppercase,
+        include_hidden=include_hidden,
+        on_missing=on_missing,
+        on_unsupported=on_unsupported,
+    )
 
 
 def collect_font_files_with_rich_progress(
     paths: Iterable[str | Path],
-    recursive: bool = True,
+    recursive: bool = False,
     *,
     allowed_extensions: Optional[Set[str]] = None,
     include_uppercase: bool = True,
@@ -397,6 +329,8 @@ def collect_font_files_with_rich_progress(
 
 
 __all__ = [
+    "BINARY_EXTENSIONS",
+    "RECOGNISED_UNSUPPORTED_EXTENSIONS",
     "SUPPORTED_EXTENSIONS",
     "collect_font_files",
     "iter_font_files",

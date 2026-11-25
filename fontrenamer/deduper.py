@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 
 import FontCore.core_console_styles as cs
 from FontCore.core_file_collector import collect_font_files
-from FontCore.core_font_extension import validate_and_fix_extension
+from FontCore.core_font_extension import describe_extension_mismatch, validate_and_fix_extension
 
 console = cs.get_console()
 
@@ -1003,7 +1003,11 @@ Keep Strategies:
         validated_primary = []
         for path_str in primary_files:
             path = Path(path_str)
-            is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
+            is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=False)  # only fontrenamer renames
+            if not is_valid and console:
+                problem = describe_extension_mismatch(path)
+                if problem:
+                    cs.StatusIndicator("warning").add_message(problem).emit()
             if fixed_path:
                 if console:
                     cs.StatusIndicator("info").add_file(
@@ -1019,7 +1023,11 @@ Keep Strategies:
         validated_secondary = []
         for path_str in secondary_files:
             path = Path(path_str)
-            is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
+            is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=False)  # only fontrenamer renames
+            if not is_valid and console:
+                problem = describe_extension_mismatch(path)
+                if problem:
+                    cs.StatusIndicator("warning").add_message(problem).emit()
             if fixed_path:
                 if console:
                     cs.StatusIndicator("info").add_file(
@@ -1131,7 +1139,11 @@ Keep Strategies:
     validated_paths = []
     for path_str in font_paths:
         path = Path(path_str)
-        is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=True)
+        is_valid, fixed_path = validate_and_fix_extension(path, auto_fix=False)  # only fontrenamer renames
+        if not is_valid and console:
+            problem = describe_extension_mismatch(path)
+            if problem:
+                cs.StatusIndicator("warning").add_message(problem).emit()
         if fixed_path:
             if console:
                 cs.StatusIndicator("info").add_file(str(fixed_path)).with_explanation(
