@@ -380,32 +380,42 @@ def _variable_family_base(slots: "VariableFilenameSlots") -> str:
     )
 
 
-def build_id1_from_variable_slots(slots: "VariableFilenameSlots") -> str:
-    """Construct ID1 from parsed variable-font filename slots.
+def _spaced(token: str | None) -> str | None:
+    """"3Axis" -> "3 Axis", "OpticalSize" -> "Optical Size" (display form of a filename token)."""
+    if not token:
+        return None
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", token)
 
-    "Variable" stays in ID1 (house convention, DECISIONS.md C4): it is part of what the font is.
-    """
-    return join_nonempty(_variable_family_base(slots), "Variable")
 
-
-def build_id4_from_variable_slots(slots: "VariableFilenameSlots") -> str:
-    """Construct ID4 from parsed variable-font filename slots."""
-    parts: list[str | None] = [_variable_family_base(slots), "Variable", slots.bespoke]
-    if slots.slope and not is_elidable_vf_slope(slots.slope):
-        parts.append(slots.slope)
-    return join_nonempty(*parts)
+def _variable_what_varies(slots: "VariableFilenameSlots") -> tuple[str | None, str | None]:
+    return _spaced(slots.axes), slots.weight
 
 
 def build_id16_from_variable_slots(slots: "VariableFilenameSlots") -> str:
-    """Construct ID16 typographic family: flat ``{root} Variable`` umbrella."""
-    return join_nonempty(slots.root_family, "Variable")
+    """ID16 typographic family: the fixed design plus Variable ("Probe Display Condensed Variable")."""
+    return join_nonempty(_variable_family_base(slots), "Variable")
+
+
+def build_id1_from_variable_slots(slots: "VariableFilenameSlots") -> str:
+    """ID1: ID16 plus the free axes and any locked weight, without the slope (DECISIONS.md, Area 5).
+
+    An angle word other than Italic (Oblique, Reverse, ...) stays in ID1 as naming; ID2 carries Italic.
+    """
+    axes, weight = _variable_what_varies(slots)
+    angle = slots.slope if slots.slope and slots.slope.lower() != "italic" else None
+    return join_nonempty(build_id16_from_variable_slots(slots), axes, weight, angle, slots.bespoke)
 
 
 def build_id17_from_variable_slots(slots: "VariableFilenameSlots") -> str:
-    """Construct ID17 typographic subfamily from variable-font filename slots."""
-    slope = slots.slope if not is_elidable_vf_slope(slots.slope) else None
-    out = join_nonempty(slots.optical, slots.width, slots.bespoke, slope)
-    return out if out else "Regular"
+    """ID17: the filename's style part, spaced and without Variable, plus Upright when the slope is fixed upright."""
+    axes, weight = _variable_what_varies(slots)
+    slope = slots.slope or ("Upright" if slots.upright else None)
+    return join_nonempty(axes, weight, slots.bespoke, slope) or "Upright"
+
+
+def build_id4_from_variable_slots(slots: "VariableFilenameSlots") -> str:
+    """ID4: ID16 plus ID17."""
+    return join_nonempty(build_id16_from_variable_slots(slots), build_id17_from_variable_slots(slots))
 
 
 def build_id1(

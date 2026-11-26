@@ -78,6 +78,7 @@ from FontCore.core_variable_filename_parser import (  # noqa: E402
     filename_has_variable_marker,
     format_variable_filename,
     parse_variable_filename,
+    resolve_variable_slots,
     slots_usable_for_policy,
 )
 
@@ -1313,14 +1314,19 @@ def _stem_after_optional_primary(
 
 
 def _variable_aligned_stem(meta: FontMetadata, stem: str) -> str:
-    """Normalize variable-font stems to static-aligned ``Family-WidthVariable`` form."""
+    """Variable-font stem in the house form ``Family{Optical}{Width}-Variable{Axes}{Weight}{Slope}``.
+
+    The font's tables decide what varies (DECISIONS.md, Area 5); the filename supplies the family and locked words.
+    """
     if not meta.is_variable:
         return stem
     basename = meta.original_filename or Path(meta.file_path).name
-    slots = parse_variable_filename(basename, strip_extension=True)
-    if slots_usable_for_policy(slots):
-        return format_variable_filename(slots)
-    return stem
+    slots = resolve_variable_slots(meta.file_path) if meta.file_path and Path(meta.file_path).is_file() else None
+    if slots is None:
+        slots = parse_variable_filename(basename, strip_extension=True)
+        if not slots_usable_for_policy(slots):
+            return stem
+    return format_variable_filename(slots)
 
 
 def resolve_renamer_stem(

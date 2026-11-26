@@ -37,7 +37,7 @@ def _vf_meta(basename: str) -> FontMetadata:
 
 def test_variable_aligned_stem_legacy_width():
     meta = _vf_meta("ReaderProCondensed-Variable.ttf")
-    assert _variable_aligned_stem(meta, "ReaderProCondensed") == "ReaderPro-CondensedVariable"
+    assert _variable_aligned_stem(meta, "ReaderProCondensed") == "ReaderProCondensed-Variable"
 
 
 def test_variable_aligned_stem_matches_format_helper():

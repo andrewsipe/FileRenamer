@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0] - 2026-11-25
+
+FontCore 0.9.0 vendored (see `FontCore/VENDOR.md`).
+
+### Changed
+- Variable fonts are renamed to `{Family}{Optical}{Width}-Variable{Axes}{Weight}{Slope}` (for example `ProbeDisplayCondensed-Variable3AxisItalic`). The font's tables decide the axes and the slope; a locked width now sits in the family part, before the hyphen.
+
 ## [0.5.0] - 2026-11-25
 
 FontCore 0.8.2 vendored (see `FontCore/VENDOR.md`).
