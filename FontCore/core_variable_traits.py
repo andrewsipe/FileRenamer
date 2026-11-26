@@ -146,8 +146,10 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
     locked_weight = None
     if not weight_free:
         weight_class = int(getattr(font["OS/2"], "usWeightClass", 400)) if "OS/2" in font else 400
-        locked_weight = _WEIGHT_BY_CLASS.get(max(100, min(1000, round(weight_class / 100) * 100)), "Regular")
-        warnings.append(f"no free weight axis: weight word {locked_weight!r} taken from usWeightClass {weight_class}")
+        word = _WEIGHT_BY_CLASS.get(max(100, min(1000, round(weight_class / 100) * 100)), "Regular")
+        if word != "Regular":  # a Regular weight class adds no word (DECISIONS.md, Area 5)
+            locked_weight = word
+            warnings.append(f"no free weight axis: weight word {word!r} taken from usWeightClass {weight_class}")
 
     if any(t in free for t in ("ital", "slnt")):
         return VariableTraits(True, free, weight_free, "free", None, {}, locked_weight, tuple(warnings))

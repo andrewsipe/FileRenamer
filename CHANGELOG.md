@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.6.1] - 2026-11-25
+
+FontCore 0.9.1 vendored: a variable font with no weight axis and a Regular weight class no longer gets a `Regular` word in its name.
+
 ## [0.6.0] - 2026-11-25
 
 FontCore 0.9.0 vendored (see `FontCore/VENDOR.md`).
