@@ -99,6 +99,10 @@ class VariableFilenameSlots:
     axes: Optional[str] = None
     weight: Optional[str] = None
     upright: Optional[bool] = None
+    # The family part of the filename as written (underscores and all), so a rename changes only what the
+    # convention needs; ``width_in_family`` says whether it already carries the locked width.
+    family_text: Optional[str] = None
+    width_in_family: bool = False
     dialect: VariableFilenameDialect = VariableFilenameDialect.STATIC_ALIGNED
     warnings: List[str] = field(default_factory=list)
 
@@ -332,6 +336,8 @@ def parse_variable_filename(
         axes=axes,
         weight=weight,
         upright=upright,
+        family_text=family_raw or None,
+        width_in_family=peeled_width is not None,
         dialect=dialect,
         warnings=warnings,
     )
@@ -390,14 +396,19 @@ def format_variable_filename(slots: VariableFilenameSlots) -> str:
         ProbeDisplayCondensed-Variable3AxisItalic
         RobotoFlex-Variable13Axis
     """
-    left_tokens: list[str] = []
-    if slots.root_family:
-        left_tokens.extend(slots.root_family.split())
-    if slots.optical:
-        left_tokens.append(slots.optical)
-    if slots.width:
-        left_tokens.append(slots.width)
-    left = _display_tokens_to_pascal(left_tokens)
+    if slots.family_text:
+        left = slots.family_text.replace(" ", "")
+        if slots.width and not slots.width_in_family:
+            left += slots.width.replace(" ", "")
+    else:
+        left_tokens: list[str] = []
+        if slots.root_family:
+            left_tokens.extend(slots.root_family.split())
+        if slots.optical:
+            left_tokens.append(slots.optical)
+        if slots.width:
+            left_tokens.append(slots.width)
+        left = _display_tokens_to_pascal(left_tokens)
 
     right = "Variable" + (slots.axes or "") + (slots.weight or "")
     if slots.bespoke:
@@ -420,6 +431,8 @@ def slots_from_plain_filename(input_name: str, *, strip_extension: bool = True) 
         root_family=format_pascal_words(stem) or parsed.family,
         optical=_format_peeled_term(peeled_optical),
         width=_format_peeled_term(peeled_width),
+        family_text=parsed.family_raw or None,
+        width_in_family=peeled_width is not None,
     )
 
 

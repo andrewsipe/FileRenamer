@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.6.2] - 2026-11-25
+
+FontCore 0.9.2 vendored: a variable filename keeps its family part as written, so `BT_Avance-Variable` stays `BT_Avance-...` instead of becoming `BTAvance-...`.
+
 ## [0.6.1] - 2026-11-25
 
 FontCore 0.9.1 vendored: a variable font with no weight axis and a Regular weight class no longer gets a `Regular` word in its name.
