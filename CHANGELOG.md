@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.8.1] - 2026-11-26
+
+FontCore 0.11.1 vendored: a locked `Regular` is written as a weight word (`AugureStereoRegular-WidthVariable` is not `AugureStereo-WidthVariable`); `Normal` and `Roman` are not read as weights, and ID2 saying Regular is not evidence of one.
+
 ## [0.8.0] - 2026-11-26
 
 FontCore 0.11.0 vendored (see `FontCore/VENDOR.md`).
