@@ -352,7 +352,7 @@ def analyze_variable_font(
 
 def is_variable_font(
     font: Any,
-    mode: VariableFontMode = VariableFontMode.STRICT,
+    mode: VariableFontMode = VariableFontMode.LENIENT,
 ) -> bool:
     """
     Check if font is a variable font.
@@ -365,7 +365,7 @@ def is_variable_font(
         True if font is variable according to mode
 
     Examples:
-        >>> # Strict mode (default): requires fvar + STAT
+        >>> # Default (lenient): the fvar table decides, as in the variable naming engine
         >>> is_variable_font(font)
         True
 
@@ -490,7 +490,7 @@ def analyze_variable_font_ttx(
 
 def is_variable_font_ttx(
     root: Any,
-    mode: VariableFontMode = VariableFontMode.STRICT,
+    mode: VariableFontMode = VariableFontMode.LENIENT,
 ) -> bool:
     """
     Check if TTX font is variable.
@@ -518,19 +518,19 @@ def is_variable_font_ttx(
 
 
 # Convenience functions for backward compatibility
-def is_variable_font_binary(font: Any, strict: bool = True) -> bool:
+def is_variable_font_binary(font: Any, strict: bool = False) -> bool:
     """
     Check if binary font is variable (backward compatible).
 
     Args:
         font: TTFont instance
-        strict: If True, require both fvar and STAT. If False, only fvar.
+        strict: If True, require both fvar and STAT. If False (the default), the fvar table decides.
 
     Returns:
         True if font is variable
 
     Examples:
-        >>> # Strict mode (default)
+        >>> # Default: the fvar table decides
         >>> is_variable_font_binary(font)
         True
 

@@ -1321,7 +1321,9 @@ def _variable_aligned_stem(meta: FontMetadata, stem: str) -> str:
     if not meta.is_variable:
         return stem
     basename = meta.original_filename or Path(meta.file_path).name
-    slots = resolve_variable_slots(meta.file_path) if meta.file_path and Path(meta.file_path).is_file() else None
+    # The file may already sit under a temporary name (phase 1 of the two-pass rename): the tables come from where it is now,
+    # the family text from the name it had.
+    slots = resolve_variable_slots(meta.file_path, name=basename) if meta.file_path and Path(meta.file_path).is_file() else None
     if slots is None:
         slots = parse_variable_filename(basename, strip_extension=True)
         if not slots_usable_for_policy(slots):

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3] - 2026-11-26
+
+FontCore 0.11.5 vendored (see `FontCore/VENDOR.md`).
+
+### Fixed
+- A real rename of a variable font left it under a temporary `_tmp_` name: the family was read from the temporary name FileRenamer gives every file in its first pass. The family now comes from the original filename and the axes from the font. Previews were not affected. Tests now do a real rename, not only a preview.
+
 ## [0.8.2] - 2026-11-26
 
 FontCore 0.11.2 vendored: a locked weight word is written only when the filename states it. The name table and `usWeightClass` are no longer read for a weight, and there is no `Weight` placeholder (`Danfo-Variable` becomes `Danfo-CustomVariableUpright`). A locked `Regular` the filename states is still written.
