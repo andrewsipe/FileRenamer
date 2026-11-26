@@ -115,11 +115,11 @@ class VariableFilenameSlots:
         return not any("invalid" in w.lower() for w in self.warnings)
 
 
-_RE_COPY_SUFFIX = re.compile(r"(?i)(?:[\s_-]*\(\d+\)|[\s_-]+copy(?:[\s_-]*\d+)?|~\d+)\s*$")
+_RE_COPY_SUFFIX = re.compile(r"(?i)(?:[\s_-]*\(\d+\)|[\s_-]+copy(?:[\s_-]*\d+)?|~\d+|\s+\d{1,2})\s*$")
 
 
 def _without_copy_suffix(name: str, *, strip_extension: bool) -> str:
-    """Drop a trailing copy marker (" copy", " copy 2", " (2)", "~001") from a filename: it names a duplicate, not a design."""
+    """Drop a trailing copy marker (" copy", " copy 2", " (2)", " 2", "~001") from a filename: it names a duplicate, not a design."""
     if strip_extension:
         stem, ext = os.path.splitext(name)
         if ext.lower() in {".ttf", ".otf", ".woff", ".woff2", ".ttc", ".otc", ".ttx"}:
@@ -479,6 +479,8 @@ def slots_from_plain_filename(input_name: str, *, strip_extension: bool = True) 
     stem, peeled_width = _peel_trailing_term(stem, ALL_WIDTH_TERMS)
     stem, peeled_optical = _peel_trailing_term(stem, ALL_OPTICAL_TERMS)
     _axes, weight, _slope, _upright, _free, _bespoke = _classify_after_variable(parsed.subfamily_raw or "")
+    if weight and weight.lower() in ("regular", "normal"):
+        weight = None  # the default style word of a plain filename (Cloitre-Regular), not a locked weight: it is read, never written
     return VariableFilenameSlots(
         root_family=format_pascal_words(stem) or parsed.family,
         optical=_format_peeled_term(peeled_optical),

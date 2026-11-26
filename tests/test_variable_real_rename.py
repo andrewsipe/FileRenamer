@@ -195,3 +195,17 @@ def test_the_prompt_names_where_the_new_names_come_from(tmp_path):
     _font(tmp_path / "messy name.ttf", variable=False, family="Other")
     out = _preview(tmp_path, answer="n\n")
     assert "variable fonts from filename and font tables, the rest to PostScript names" in out
+
+
+# ---- a copy marker and a plain -Regular -------------------------------------------------------------------------------
+
+def test_a_finder_copy_suffix_is_a_duplicate_not_part_of_the_family(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)
+    _font(tmp_path / "Probe-Variable 2.ttf", variable=True)
+    names = _rename(tmp_path)
+    assert "Probe-VariableUpright.ttf" in names and "Probe-VariableUpright~001.ttf" in names and len(names) == 2
+
+
+def test_a_plain_regular_on_a_variable_font_names_no_weight(tmp_path):
+    _font(tmp_path / "Cloitre-Regular.ttf", variable=True, family="Cloitre", axes=(("GRAD", -50, 0, 100),))
+    assert _rename(tmp_path) == ["Cloitre-CustomVariableUpright.ttf"]
