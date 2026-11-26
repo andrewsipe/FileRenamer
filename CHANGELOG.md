@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0] - 2026-11-26
+
+FontCore 0.11.0 vendored (see `FontCore/VENDOR.md`).
+
+### Changed
+- Variable fonts are renamed to `Family{Optical}{Width}{Variant}{Weight}-{FreeExtras}Variable{Slope}` (for example `AugureStereoLight-WidthVariableUpright`): what is fixed goes in the family, the free extras sit left of Variable and a locked slope right of it. A font whose every axis is locked is renamed as a static font.
+
 ## [0.7.2] - 2026-11-26
 
 FontCore 0.10.2 vendored: a locked `Regular` weight word is kept (`AugureStereo-VariableRegular` is no longer mistaken for a free weight), and is dropped only when the font has a free weight axis.
