@@ -464,10 +464,12 @@ def slots_from_plain_filename(input_name: str, *, strip_extension: bool = True) 
     stem = parsed.family_raw or ""
     stem, peeled_width = _peel_trailing_term(stem, ALL_WIDTH_TERMS)
     stem, peeled_optical = _peel_trailing_term(stem, ALL_OPTICAL_TERMS)
+    _axes, weight, _slope, _upright, _free, _bespoke = _classify_after_variable(parsed.subfamily_raw or "")
     return VariableFilenameSlots(
         root_family=format_pascal_words(stem) or parsed.family,
         optical=_format_peeled_term(peeled_optical),
         width=_format_peeled_term(peeled_width),
+        weight=weight,  # a weight the plain filename states (Lacano-Regular); the tables decide whether it applies
         family_text=parsed.family_raw or None,
         width_in_family=peeled_width is not None,
     )
@@ -499,9 +501,7 @@ def apply_variable_traits(slots: VariableFilenameSlots, traits) -> VariableFilen
         if existing:
             weight, in_family = existing, True
         else:
-            weight = slots.weight or traits.locked_weight or "Weight"  # "Weight": locked but nobody has named it yet
-            if weight == "Weight":
-                warnings.append("weight is locked but no name states it: the placeholder 'Weight' needs a real name")
+            weight = slots.weight  # only a weight the filename states; none otherwise (names and usWeightClass are not evidence)
     if traits.slope == "italic":
         slope, upright, slope_free = traits.slope_word, None, False
     elif traits.slope == "free":

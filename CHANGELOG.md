@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.8.2] - 2026-11-26
+
+FontCore 0.11.2 vendored: a locked weight word is written only when the filename states it. The name table and `usWeightClass` are no longer read for a weight, and there is no `Weight` placeholder (`Danfo-Variable` becomes `Danfo-CustomVariableUpright`). A locked `Regular` the filename states is still written.
+
 ## [0.8.1] - 2026-11-26
 
 FontCore 0.11.1 vendored: a locked `Regular` is written as a weight word (`AugureStereoRegular-WidthVariable` is not `AugureStereo-WidthVariable`); `Normal` and `Roman` are not read as weights, and ID2 saying Regular is not evidence of one.

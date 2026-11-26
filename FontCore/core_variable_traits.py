@@ -41,22 +41,6 @@ _ANGLE_WORDS = (
 )
 _ANGLE_ENDING = re.compile("(" + "|".join(w for w, _ in _ANGLE_WORDS) + ")$", re.I)
 
-# Locked-weight words read from the name table. Regular is a weight here (a locked Regular is a different font from a free
-# weight: AugureStereoRegular is not AugureStereo). Normal and Roman are absent: they are width and slope words as often as
-# weights. ID2 never supplies Regular (see _locked_weight_word): it names the RIBBI slot, not a weight.
-_WEIGHT_WORDS = (
-    ("regular", "Regular"),
-    ("extralight", "Extralight"), ("ultralight", "Ultralight"), ("semilight", "Semilight"), ("hairline", "Hairline"),
-    ("thin", "Thin"), ("light", "Light"), ("book", "Book"), ("medium", "Medium"), ("semibold", "Semibold"),
-    ("demibold", "Demibold"), ("extrabold", "Extrabold"), ("ultrabold", "Ultrabold"), ("extrablack", "Extrablack"),
-    ("ultrablack", "Ultrablack"), ("bold", "Bold"), ("black", "Black"), ("heavy", "Heavy"), ("fat", "Fat"),
-)
-
-_WEIGHT_BY_CLASS = {
-    100: "Thin", 200: "Extralight", 300: "Light", 400: "Regular", 500: "Medium",
-    600: "Semibold", 700: "Bold", 800: "Extrabold", 900: "Black", 1000: "Extrablack",
-}
-
 
 @dataclass(frozen=True)
 class VariableTraits:
@@ -169,42 +153,54 @@ def _instance_vote(font: Any) -> Optional[str]:
     return "italic"
 
 
+def _stat_vote(font: Any) -> Optional[str]:
+    if "STAT" not in font:
+        return None
+    try:
+        stat = font["STAT"].table
+        axes = stat.DesignAxisRecord.Axis if stat.DesignAxisRecord else []
+        tags = [a.AxisTag for a in axes]
+        if "ital" not in tags:
+            return None
+        idx = tags.index("ital")
+        values = set()
+        for av in (stat.AxisValueArray.AxisValue if stat.AxisValueArray else []):
+            if av.Format in (1, 3):
+                pairs = [(av.AxisIndex, av.Value)]
+            elif av.Format == 2:
+                pairs = [(av.AxisIndex, av.NominalValue)]
+            elif av.Format == 4:
+                pairs = [(r.AxisIndex, r.Value) for r in av.AxisValueRecord]
+            else:
+                pairs = []
+            values.update(v for i, v in pairs if i == idx)
+        if values == {1.0} or values == {1}:
+            return "italic"
+        if values == {0.0} or values == {0}:
+            return "upright"
+    except Exception:
+        return None
+    return None
+
+
+def _instance_vote(font: Any) -> Optional[str]:
+    """Italic when every named instance ends in a slope word. Anything else is no vote: a missing slope word is not
+    evidence of upright (66 of 69 tied vault fonts were italics whose instances only named weights)."""
+    instances = list(font["fvar"].instances)
+    if not instances:
+        return None
+    for inst in instances:
+        words = _name(font, inst.subfamilyNameID).split()
+        if not (words and _ANGLE_ENDING.search(words[-1])):
+            return None
+    return "italic"
+
+
 def _weight_word(text: str) -> Optional[str]:
     squashed = re.sub(r"[\s_-]+", "", text or "").lower()
     for word, canonical in _WEIGHT_WORDS:
         if word in squashed:
             return canonical
-    return None
-
-
-def _locked_weight_word(font: Any) -> Optional[str]:
-    """For a font with no weight axis: the weight the names state (ID17, ID2, instances, a STAT label)."""
-    w = _weight_word(_name(font, 17))
-    if w:
-        return w
-    w = _weight_word(_name(font, 2))
-    if w and w != "Regular":  # ID2 says Regular for almost every upright font: not evidence of a weight
-        return w
-    found: dict = {}
-    for inst in font["fvar"].instances:
-        w = _weight_word(_name(font, inst.subfamilyNameID))
-        if w:
-            found[w] = found.get(w, 0) + 1
-    if found:
-        return max(found, key=found.get)
-    if "STAT" in font:
-        try:
-            stat = font["STAT"].table
-            tags = [a.AxisTag for a in stat.DesignAxisRecord.Axis]
-            if "wght" in tags:
-                idx = tags.index("wght")
-                for av in stat.AxisValueArray.AxisValue:
-                    if av.Format in (1, 3) and av.AxisIndex == idx:
-                        w = _weight_word(_name(font, av.ValueNameID))
-                        if w:
-                            return w
-        except Exception:
-            pass
     return None
 
 
@@ -225,8 +221,7 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
 
     locked_weight = None
     if not weight_free:
-        locked_weight = _locked_weight_word(font)
-        warnings.append("no free weight axis: the weight is locked" + (f" ({locked_weight})" if locked_weight else " and no name states it"))
+        warnings.append("no free weight axis: only a weight the filename states is written (the names and usWeightClass are not evidence of one)")
 
     if any(t in free for t in ("ital", "slnt")):
         return VariableTraits(True, free, weight_free, "free", None, {}, locked_weight, tuple(warnings))
