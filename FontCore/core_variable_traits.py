@@ -33,6 +33,9 @@ _ANGLE_WORDS = (
     ("reverse", "Reverse"),
     ("kursiv", "Kursiv"),
     ("reclined", "Reclined"),
+    ("rotalic", "Rotalic"),
+    ("tiltalic", "Tiltalic"),
+    ("corsiva", "Corsiva"),
     ("cursive", "Cursive"),
     ("italic", "Italic"),
 )

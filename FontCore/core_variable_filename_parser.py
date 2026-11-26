@@ -179,7 +179,7 @@ def _slope_words() -> dict[str, str]:
     words = {k: v for k, v in _SLOPE_CANONICAL.items() if k not in _UPRIGHT_WORDS}
     for slope in KNOWN_VF_SLOPES:
         words.setdefault(slope.lower(), slope)
-    for word in ("slant", "backslant", "reclined", "reverse", "cursive", "kursiv"):  # as the designer spells them
+    for word in ("slant", "backslant", "reclined", "reverse", "cursive", "kursiv", "rotalic", "tiltalic", "corsiva"):  # as the designer spells them
         words[word] = word.capitalize()
     return words
 
@@ -417,13 +417,13 @@ def format_variable_filename(slots: VariableFilenameSlots) -> str:
         if slots.width:
             left_tokens.append(slots.width)
         left = _display_tokens_to_pascal(left_tokens)
+    if slots.bespoke and not left.endswith(slots.bespoke.replace(" ", "")):
+        left += slots.bespoke.replace(" ", "")  # a design variant (Alt, Cut, Swash) belongs to the family
     if slots.collection and not left.endswith("Collection"):
         left += "Collection"
 
     right = "Variable" + (slots.axes or "") + (slots.weight or "")
-    if slots.bespoke:
-        right += slots.bespoke.replace(" ", "")
-    elif slots.slope:
+    if slots.slope:
         right += slots.slope.replace(" ", "")
     elif slots.upright:
         right += "Upright"

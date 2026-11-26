@@ -379,7 +379,7 @@ def _variable_family_base(slots: "VariableFilenameSlots") -> str:
     if getattr(slots, "collection", False) and not (slots.root_family or "").endswith("Collection"):
         collection = "Collection"
     return (
-        join_nonempty(slots.root_family, slots.optical, slots.width, collection) or slots.root_family
+        join_nonempty(slots.root_family, slots.optical, slots.width, slots.bespoke, collection) or slots.root_family
     )
 
 
@@ -406,7 +406,7 @@ def build_id1_from_variable_slots(slots: "VariableFilenameSlots") -> str:
     """
     axes, weight = _variable_what_varies(slots)
     angle = slots.slope if slots.slope and slots.slope.lower() != "italic" else None
-    return join_nonempty(build_id16_from_variable_slots(slots), axes, weight, angle, slots.bespoke)
+    return join_nonempty(build_id16_from_variable_slots(slots), axes, weight, angle)
 
 
 def build_id17_from_variable_slots(slots: "VariableFilenameSlots") -> str:
@@ -417,7 +417,7 @@ def build_id17_from_variable_slots(slots: "VariableFilenameSlots") -> str:
     """
     axes, weight = _variable_what_varies(slots)
     slope = slots.slope or ("Upright" if slots.upright else "Upright Italic")
-    return join_nonempty(axes, weight, slots.bespoke, slope)
+    return join_nonempty(axes, weight, slope)
 
 
 def build_id4_from_variable_slots(slots: "VariableFilenameSlots") -> str:

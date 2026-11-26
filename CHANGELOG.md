@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.7.1] - 2026-11-26
+
+FontCore 0.10.1 vendored: a design-variant word after Variable (Alt, Cut, Swash) moves into the family part (`Probe-VariableAlt` becomes `ProbeAlt-Variable`); Rotalic, Tiltalic and Corsiva are read as slope words.
+
 ## [0.7.0] - 2026-11-26
 
 FontCore 0.10.0 vendored (see `FontCore/VENDOR.md`).
