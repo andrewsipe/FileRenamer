@@ -168,7 +168,6 @@ _AXES_WORDS = {"opticalsize": "OpticalSize", "width": "Width", "custom": "Custom
 _AXES_ORDER = ("Width", "OpticalSize", "Custom")
 _LEGACY_DROPPED = {"slope"}  # the old word for a free slope: read and dropped
 _UPRIGHT_WORDS = {"upright", "roman"}
-_LEGACY_ELIDED_WEIGHTS = {"regular", "normal"}
 
 
 def _weight_words() -> dict[str, str]:
@@ -220,8 +219,6 @@ def _classify_after_variable(after_raw: str):
     if leftovers:
         bespoke = "".join(leftovers)
     axes = "".join(a for a in _AXES_ORDER if a in axes_found) or None
-    if weight and weight.lower() in _LEGACY_ELIDED_WEIGHTS and axes is None:
-        weight = None  # the old pairing marker: Probe-VariableRegular was just Probe-Variable
     if slope:
         upright = False
     return axes, weight, slope, (True if upright else None), not (slope or upright), bespoke

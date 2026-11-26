@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.7.2] - 2026-11-26
+
+FontCore 0.10.2 vendored: a locked `Regular` weight word is kept (`AugureStereo-VariableRegular` is no longer mistaken for a free weight), and is dropped only when the font has a free weight axis.
+
 ## [0.7.1] - 2026-11-26
 
 FontCore 0.10.1 vendored: a design-variant word after Variable (Alt, Cut, Swash) moves into the family part (`Probe-VariableAlt` becomes `ProbeAlt-Variable`); Rotalic, Tiltalic and Corsiva are read as slope words.
