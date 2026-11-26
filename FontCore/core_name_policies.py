@@ -374,9 +374,12 @@ def is_elidable_vf_slope(slope: str | None) -> bool:
 
 
 def _variable_family_base(slots: "VariableFilenameSlots") -> str:
-    """Root family plus optical size and width, without the word Variable."""
+    """Root family plus optical size, width and Collection, without the word Variable."""
+    collection = None
+    if getattr(slots, "collection", False) and not (slots.root_family or "").endswith("Collection"):
+        collection = "Collection"
     return (
-        join_nonempty(slots.root_family, slots.optical, slots.width) or slots.root_family
+        join_nonempty(slots.root_family, slots.optical, slots.width, collection) or slots.root_family
     )
 
 
@@ -407,10 +410,14 @@ def build_id1_from_variable_slots(slots: "VariableFilenameSlots") -> str:
 
 
 def build_id17_from_variable_slots(slots: "VariableFilenameSlots") -> str:
-    """ID17: the filename's style part, spaced and without Variable, plus Upright when the slope is fixed upright."""
+    """ID17: the filename's style words, spaced and without Variable, with the slope written out.
+
+    A fixed upright is Upright, a fixed slope is the designer's word, and a free slope (no slope word in the filename)
+    is "Upright Italic". Regular never appears here.
+    """
     axes, weight = _variable_what_varies(slots)
-    slope = slots.slope or ("Upright" if slots.upright else None)
-    return join_nonempty(axes, weight, slots.bespoke, slope) or "Upright"
+    slope = slots.slope or ("Upright" if slots.upright else "Upright Italic")
+    return join_nonempty(axes, weight, slots.bespoke, slope)
 
 
 def build_id4_from_variable_slots(slots: "VariableFilenameSlots") -> str:

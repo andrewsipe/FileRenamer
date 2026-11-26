@@ -8,6 +8,9 @@ The tables decide, not the filename (DECISIONS.md, Area 5). Slope is decided lik
    instance names when there are any (all end in an italic word = italic, none = upright, mixed = no vote).
    The majority decides, a tie goes to the name cue, and STAT contradicting the bits and the names is a warning.
 3. ``post.italicAngle`` and the caret slope never vote. Surveyed on the vault, they were written wrongly on upright fonts.
+
+The baseline is weight plus a free slope. ``axes_word`` names only the extras: Width, OpticalSize, then Custom for any
+unregistered axis. All four registered axes free make a ``collection`` (the word goes in the family name).
 """
 
 from __future__ import annotations
@@ -16,7 +19,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-_COMMON_AXIS_WORDS = {"wdth": "Width", "opsz": "OpticalSize", "slnt": "Slope", "ital": "Slope"}
+_REGISTERED = {"wght", "wdth", "opsz", "slnt", "ital"}
+_EXTRA_AXIS_WORDS = (("wdth", "Width"), ("opsz", "OpticalSize"))
 
 # (search word, canonical word). Longest first: "backslanted" contains "slanted".
 _ANGLE_WORDS = (
@@ -28,6 +32,7 @@ _ANGLE_WORDS = (
     ("inclined", "Inclined"),
     ("reverse", "Reverse"),
     ("kursiv", "Kursiv"),
+    ("reclined", "Reclined"),
     ("cursive", "Cursive"),
     ("italic", "Italic"),
 )
@@ -55,17 +60,23 @@ class VariableTraits:
         return len(self.free_axes)
 
     @property
+    def slope_axis_free(self) -> bool:
+        return any(t in self.free_axes for t in ("slnt", "ital"))
+
+    @property
+    def collection(self) -> bool:
+        """All four registered axes free (weight, width, optical size, slope): a collection or super family."""
+        return self.weight_free and "wdth" in self.free_axes and "opsz" in self.free_axes and self.slope_axis_free
+
+    @property
     def axes_word(self) -> Optional[str]:
-        """Blank for weight only; one common extra axis is named; anything else is a count."""
-        n = len(self.free_axes)
-        if n == 0:
-            return None
-        others = [t for t in self.free_axes if t != "wght"]
-        if self.weight_free and not others:
-            return None
-        if len(others) == 1 and others[0] in _COMMON_AXIS_WORDS:
-            return _COMMON_AXIS_WORDS[others[0]]
-        return f"{n}Axis"
+        """The extras on top of weight and a free slope: Width, OpticalSize, then Custom (None when there are none)."""
+        words = []
+        if not self.collection:
+            words += [word for tag, word in _EXTRA_AXIS_WORDS if tag in self.free_axes]
+        if any(t not in _REGISTERED for t in self.free_axes):
+            words.append("Custom")
+        return "".join(words) or None
 
 
 def _name(font: Any, name_id: int) -> str:
@@ -76,11 +87,24 @@ def _name(font: Any, name_id: int) -> str:
 
 
 def _angle_word(text: str) -> Optional[str]:
-    low = text.lower()
-    for word, canonical in _ANGLE_WORDS:
-        if word in low:
-            return canonical
+    """The slope word in ``text`` as the designer spelled it (Slant stays Slant), first letter capitalised."""
+    for word, _canonical in _ANGLE_WORDS:
+        m = re.search(word, text, re.I)
+        if m:
+            return m.group(0).capitalize()
     return None
+
+
+def _instance_angle_word(font: Any) -> Optional[str]:
+    """The most common slope word that ends the named-instance names (Light Backslant -> Backslant)."""
+    found: dict = {}
+    for inst in font["fvar"].instances:
+        words = _name(font, inst.subfamilyNameID).split()
+        if words and _ANGLE_ENDING.search(words[-1]):
+            w = _angle_word(words[-1])
+            if w:
+                found[w] = found.get(w, 0) + 1
+    return max(found, key=found.get) if found else None
 
 
 def _stat_vote(font: Any) -> Optional[str]:
@@ -145,11 +169,7 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
 
     locked_weight = None
     if not weight_free:
-        weight_class = int(getattr(font["OS/2"], "usWeightClass", 400)) if "OS/2" in font else 400
-        word = _WEIGHT_BY_CLASS.get(max(100, min(1000, round(weight_class / 100) * 100)), "Regular")
-        if word != "Regular":  # a Regular weight class adds no word (DECISIONS.md, Area 5)
-            locked_weight = word
-            warnings.append(f"no free weight axis: weight word {word!r} taken from usWeightClass {weight_class}")
+        warnings.append("no free weight axis: named by the same rules, so the name reads as if it had one")
 
     if any(t in free for t in ("ital", "slnt")):
         return VariableTraits(True, free, weight_free, "free", None, {}, locked_weight, tuple(warnings))
@@ -177,14 +197,12 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
 
     word = None
     if slope == "italic":
-        word = _angle_word(cues)
+        word = _instance_angle_word(font) or _angle_word(cues)
         if word is None and "OS/2" in font and font["OS/2"].fsSelection & (1 << 9):
             word = "Oblique"
         if word is None:
             word = "Italic"
             warnings.append("no slope word in the names; Italic assumed")
-        elif word != "Italic" and "OS/2" in font and font["OS/2"].fsSelection & (1 << 9) and _angle_word(cues) is None:
-            word = "Oblique"
     return VariableTraits(True, free, weight_free, slope, word, votes, locked_weight, tuple(warnings))
 
 

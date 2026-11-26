@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0] - 2026-11-26
+
+FontCore 0.10.0 vendored (see `FontCore/VENDOR.md`).
+
+### Changed
+- Variable fonts are renamed to `{Family}{Optical}{Width}-Variable{Axes}{Slope}` under the refined rule: no axis counts and no `Slope` word, `Width`/`OpticalSize`/`Custom` for the extras, `Upright` or the designer's slope word when the slope is locked, and a font with all four registered axes free becomes `{Family}Collection-Variable`.
+
 ## [0.6.2] - 2026-11-25
 
 FontCore 0.9.2 vendored: a variable filename keeps its family part as written, so `BT_Avance-Variable` stays `BT_Avance-...` instead of becoming `BTAvance-...`.
