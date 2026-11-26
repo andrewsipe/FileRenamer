@@ -114,3 +114,41 @@ def test_true_duplicates_keep_one_clean_name_and_number_the_rest(tmp_path):
 def test_a_variable_font_with_every_axis_locked_is_named_as_a_static_font(tmp_path):
     _font(tmp_path / "Probe-Regular.ttf", variable=True, axes=(("wght", 400, 400, 400),))
     assert _rename(tmp_path) == ["Probe-Regular.ttf"]
+
+
+# ---- --variable-only: rename the variable fonts of a mixed folder and leave the static ones alone ---------------------
+
+def _rename_with(folder: Path, *flags):
+    result = subprocess.run(
+        [sys.executable, "-m", "fontrenamer.renamer", *flags, "--no-progress", str(folder)],
+        capture_output=True, text=True, cwd=ROOT, timeout=300, stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode == 0, result.stdout[-600:] + result.stderr[-600:]
+    return sorted(p.name for p in folder.iterdir() if not p.name.startswith(".")), result.stdout
+
+
+def test_variable_only_renames_the_variable_fonts_and_leaves_the_static_ones(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)
+    _font(tmp_path / "messy name.ttf", variable=False, family="Other")
+    names, _ = _rename_with(tmp_path, "--no-preview", "--variable-only")
+    assert names == ["Probe-VariableUpright.ttf", "messy name.ttf"]
+
+
+def test_without_the_flag_both_kinds_are_renamed(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)
+    _font(tmp_path / "messy name.ttf", variable=False, family="Other")
+    names, _ = _rename_with(tmp_path, "--no-preview")
+    assert "messy name.ttf" not in names and "Probe-VariableUpright.ttf" in names
+
+
+def test_variable_only_preview_lists_only_variable_fonts(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)
+    _font(tmp_path / "messy name.ttf", variable=False, family="Other")
+    names, out = _rename_with(tmp_path, "-n", "--variable-only")
+    assert "messy name.ttf" in names and "Probe-Variable.ttf" in names  # a preview changes nothing
+    assert "Probe-VariableUpright" in out and "Other-Regular" not in out
+
+
+def test_the_help_lists_the_flag():
+    result = subprocess.run([sys.executable, "-m", "fontrenamer.renamer", "-h"], capture_output=True, text=True, cwd=ROOT, timeout=60)
+    assert "--variable-only" in result.stdout

@@ -127,6 +127,10 @@ STEM_SOURCES_ALLOWING_INVALID_POSTSCRIPT = frozenset(
 )
 
 
+# Set from --variable-only: rename only the variable fonts and leave the static ones as they are.
+_VARIABLE_ONLY = False
+
+
 def stem_mode_allows_missing_postscript(stem_source: str, *, rename_all: bool) -> bool:
     """Whether to accept fonts whose PostScript name is missing or path-unsafe."""
     return rename_all or stem_source in STEM_SOURCES_ALLOWING_INVALID_POSTSCRIPT
@@ -1983,6 +1987,9 @@ def process_single_font_metadata(
         return None
 
     metadata.original_filename = original_name
+    if _VARIABLE_ONLY and not metadata.is_variable:
+        restore_temp_file(temp_path, original_path, dry_run)
+        return None
 
     # Validate PostScript name unless policy can rename without it (see stem_mode_allows_missing_postscript).
     allow_invalid_ps = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
@@ -2104,6 +2111,9 @@ def _process_extracted_metadata(
         restore_temp_file(temp_path, original_path, dry_run)
         return
     metadata.original_filename = original_name
+    if _VARIABLE_ONLY and not metadata.is_variable:
+        restore_temp_file(temp_path, original_path, dry_run)
+        return
     allow_invalid_ps = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
     if metadata.is_variable:
         allow_invalid_ps = True  # its house name comes from the filename and the font's tables, not from ID6
@@ -2420,6 +2430,8 @@ def analyze_renames(
                 need_extract.append(font_path)
 
         for font_path, metadata in cached_pairs:
+            if _VARIABLE_ONLY and not metadata.is_variable:
+                continue
             skip_ps_check = metadata.is_variable or stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
             if not skip_ps_check:
                 is_valid, _ = is_valid_postscript_name(metadata.ps_name)
@@ -2448,6 +2460,8 @@ def analyze_renames(
 
             for font_path, metadata in zip(need_extract, extracted):
                 if metadata is None:
+                    continue
+                if _VARIABLE_ONLY and not metadata.is_variable:
                     continue
                 skip_ps_check = metadata.is_variable or stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
                 if not skip_ps_check:
@@ -2850,6 +2864,7 @@ Examples:
   %(prog)s /fonts/ -N full        # Filenames from nameID 4 (full name)
   %(prog)s /fonts/ -N best        # Best per-file name table pick; else keep filename
   %(prog)s /fonts/ --show-quality  # Show quality scores in preview
+  %(prog)s /fonts/ --variable-only  # Rename the variable fonts; leave the static ones
         """,
     )
 
@@ -2888,6 +2903,11 @@ Examples:
         "--no-preview",
         action="store_true",
         help="skip the preview and start right away",
+    )
+    parser.add_argument(
+        "--variable-only",
+        action="store_true",
+        help="rename the variable fonts and leave the static ones as they are (for a mixed folder whose static filenames are already set)",
     )
     parser.add_argument(
         "--show-quality",
@@ -2938,6 +2958,9 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    global _VARIABLE_ONLY
+    _VARIABLE_ONLY = bool(getattr(args, "variable_only", False))
 
     if args.use_typographic_names:
         if args.stem != FILENAME_STEM_POSTSCRIPT:

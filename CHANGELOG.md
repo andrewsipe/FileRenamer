@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.10.0] - 2026-11-26
+
+### Added
+- `--variable-only` renames the variable fonts of a mixed folder and leaves the static ones as they are, for collections whose static filenames are already set by other means.
+
 ## [0.9.0] - 2026-11-26
 
 FontCore 0.11.6 vendored (see `FontCore/VENDOR.md`).
