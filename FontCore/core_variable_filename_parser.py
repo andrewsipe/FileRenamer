@@ -241,8 +241,8 @@ def _classify_after_variable(after_raw: str):
     if leftovers:
         bespoke = "".join(leftovers)
     axes = "".join(a for a in _AXES_ORDER if a in axes_found) or None
-    if weight and weight.lower() in {"regular", "normal"}:
-        weight = None  # never a weight word in a variable name
+    if weight and weight.lower() == "normal":
+        weight = None  # Normal is a width or slope default as often as a weight: not written
     if slope:
         upright = False
     return axes, weight, slope, (True if upright else None), not (slope or upright), bespoke

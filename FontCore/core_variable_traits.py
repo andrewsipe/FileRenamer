@@ -41,9 +41,11 @@ _ANGLE_WORDS = (
 )
 _ANGLE_ENDING = re.compile("(" + "|".join(w for w, _ in _ANGLE_WORDS) + ")$", re.I)
 
-# Locked-weight words read from the name table. Regular, Normal and Roman are deliberately absent: they are not
-# written as weight words in a variable name (they name the default, not a weight).
+# Locked-weight words read from the name table. Regular is a weight here (a locked Regular is a different font from a free
+# weight: AugureStereoRegular is not AugureStereo). Normal and Roman are absent: they are width and slope words as often as
+# weights. ID2 never supplies Regular (see _locked_weight_word): it names the RIBBI slot, not a weight.
 _WEIGHT_WORDS = (
+    ("regular", "Regular"),
     ("extralight", "Extralight"), ("ultralight", "Ultralight"), ("semilight", "Semilight"), ("hairline", "Hairline"),
     ("thin", "Thin"), ("light", "Light"), ("book", "Book"), ("medium", "Medium"), ("semibold", "Semibold"),
     ("demibold", "Demibold"), ("extrabold", "Extrabold"), ("ultrabold", "Ultrabold"), ("extrablack", "Extrablack"),
@@ -176,11 +178,13 @@ def _weight_word(text: str) -> Optional[str]:
 
 
 def _locked_weight_word(font: Any) -> Optional[str]:
-    """For a font with no weight axis: the weight the names state (ID17, ID2, instances, a STAT label), never Regular."""
-    for nid in (17, 2):
-        w = _weight_word(_name(font, nid))
-        if w:
-            return w
+    """For a font with no weight axis: the weight the names state (ID17, ID2, instances, a STAT label)."""
+    w = _weight_word(_name(font, 17))
+    if w:
+        return w
+    w = _weight_word(_name(font, 2))
+    if w and w != "Regular":  # ID2 says Regular for almost every upright font: not evidence of a weight
+        return w
     found: dict = {}
     for inst in font["fvar"].instances:
         w = _weight_word(_name(font, inst.subfamilyNameID))
