@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1] - 2026-11-26
+
+### Changed
+- The preview header and the confirmation prompt say where the new names come from: variable fonts from the filename and the font tables, not from PostScript names. With `--variable-only` the header says static fonts are left alone.
+- The preview counts variable fonts ("2 (1 to rename, 1 already named correctly)") and static fonts left alone.
+- The Method column is shown only when the rows differ; one method for every row is said once above the table. The variable label is now `Variable (tables)`, so it no longer wraps.
+
 ## [0.10.0] - 2026-11-26
 
 ### Added

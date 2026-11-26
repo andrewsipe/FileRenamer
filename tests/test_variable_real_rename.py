@@ -152,3 +152,46 @@ def test_variable_only_preview_lists_only_variable_fonts(tmp_path):
 def test_the_help_lists_the_flag():
     result = subprocess.run([sys.executable, "-m", "fontrenamer.renamer", "-h"], capture_output=True, text=True, cwd=ROOT, timeout=60)
     assert "--variable-only" in result.stdout
+
+
+# ---- the preview says what it is doing -------------------------------------------------------------------------------
+
+def _preview(folder: Path, *flags, answer=None):
+    result = subprocess.run(
+        [sys.executable, "-m", "fontrenamer.renamer", *flags, "--no-progress", str(folder)],
+        capture_output=True, text=True, cwd=ROOT, timeout=300, input=answer, stdin=None if answer else subprocess.DEVNULL,
+    )
+    return " ".join(result.stdout.split())  # the terminal wraps long lines
+
+
+def test_the_preview_counts_variable_fonts_and_says_the_static_ones_were_left_alone(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)
+    _font(tmp_path / "Done-VariableUpright.ttf", variable=True, family="Done")
+    _font(tmp_path / "messy name.ttf", variable=False, family="Other")
+    out = _preview(tmp_path, "-n", "--variable-only")
+    assert "Variable fonts: 2 (1 to rename, 1 already named correctly)" in out
+    assert "Static fonts left alone: 1" in out
+    assert "Variable fonts only" in out
+
+
+def test_one_method_for_every_row_is_said_once_not_repeated_in_a_column(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)
+    out = _preview(tmp_path, "-n", "--variable-only")
+    assert "Variable fonts are named from the filename and the font tables" in out
+    assert "Method" not in out
+
+
+def test_a_mixed_result_keeps_the_method_column(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)
+    _font(tmp_path / "messy name.ttf", variable=False, family="Other")
+    out = _preview(tmp_path, "-n")
+    assert "Method" in out and "Variable (tables)" in out and "PostScript (6)" in out
+
+
+def test_the_prompt_names_where_the_new_names_come_from(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)
+    out = _preview(tmp_path, "--variable-only", answer="n\n")
+    assert "variable font files (from filename and font tables)" in out and "to PostScript names" not in out
+    _font(tmp_path / "messy name.ttf", variable=False, family="Other")
+    out = _preview(tmp_path, answer="n\n")
+    assert "variable fonts from filename and font tables, the rest to PostScript names" in out

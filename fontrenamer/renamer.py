@@ -130,6 +130,9 @@ STEM_SOURCES_ALLOWING_INVALID_POSTSCRIPT = frozenset(
 # Set from --variable-only: rename only the variable fonts and leave the static ones as they are.
 _VARIABLE_ONLY = False
 
+# Counts from the latest analyze_renames call, for the preview summary.
+_ANALYSIS_TALLY = {"variable": 0, "variable_ok": 0, "static_skipped": 0}
+
 
 def stem_mode_allows_missing_postscript(stem_source: str, *, rename_all: bool) -> bool:
     """Whether to accept fonts whose PostScript name is missing or path-unsafe."""
@@ -1226,6 +1229,10 @@ def _pick_best_filesystem_stem(
     return stem
 
 
+VARIABLE_METHOD_LABEL = "Variable (tables)"
+VARIABLE_METHOD_NOTE = "Variable fonts are named from the filename and the font tables"
+
+
 def describe_preview_stem_method(
     meta: FontMetadata, stem_source: str, force_family: Optional[str]
 ) -> str:
@@ -1233,7 +1240,7 @@ def describe_preview_stem_method(
     Short label for preview table: which name-table source drove the rename target.
     """
     if meta.is_variable and _variable_house_stem(meta):
-        return "Variable (filename + font tables)"
+        return VARIABLE_METHOD_LABEL
 
     if stem_source == FILENAME_STEM_BEST:
         _, tier = _pick_best_stem_and_tier(meta, force_family)
@@ -2412,6 +2419,7 @@ def analyze_renames(
     """Analyze what renames would occur without actually performing them"""
     dirs_to_process = group_files_by_directory(font_paths)
     previews_by_dir: Dict[str, List[RenamePreview]] = {}
+    _ANALYSIS_TALLY.update(variable=0, variable_ok=0, static_skipped=0)
 
     for directory, files_in_dir in dirs_to_process.items():
         font_files = [Path(f) for f in files_in_dir]
@@ -2431,6 +2439,7 @@ def analyze_renames(
 
         for font_path, metadata in cached_pairs:
             if _VARIABLE_ONLY and not metadata.is_variable:
+                _ANALYSIS_TALLY["static_skipped"] += 1
                 continue
             skip_ps_check = metadata.is_variable or stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
             if not skip_ps_check:
@@ -2462,6 +2471,8 @@ def analyze_renames(
                 if metadata is None:
                     continue
                 if _VARIABLE_ONLY and not metadata.is_variable:
+                    _ANALYSIS_TALLY["static_skipped"] += 1
+                    cache[font_path.name] = metadata
                     continue
                 skip_ps_check = metadata.is_variable or stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
                 if not skip_ps_check:
@@ -2489,6 +2500,10 @@ def analyze_renames(
         previews = []
         for original_path, new_name in rename_map.items():
             if original_path.name == new_name:
+                _m = font_metadata.get(original_path)
+                if _m is not None and _m.is_variable:
+                    _ANALYSIS_TALLY["variable_ok"] += 1
+                    _ANALYSIS_TALLY["variable"] += 1
                 continue
 
             # Resolve paths for consistent matching using normalized paths
@@ -2501,6 +2516,8 @@ def analyze_renames(
             if not meta:
                 continue
 
+            if meta.is_variable:
+                _ANALYSIS_TALLY["variable"] += 1
             ps_name = meta.ps_name
             priority = 0
             if "~" in new_name:
@@ -2599,6 +2616,21 @@ def format_language_support(lang_set: set) -> str:
     return ", ".join(langs) if langs else "Latin"
 
 
+def _rename_prompt_text(previews_by_dir: Dict[str, List[RenamePreview]]) -> str:
+    """Confirmation line that names where the new names come from."""
+    previews = [p for pv in previews_by_dir.values() for p in pv]
+    variable = sum(1 for p in previews if p.metadata is not None and p.metadata.is_variable)
+    total = len(previews)
+    if total and variable == total:
+        return f"Ready to rename {cs.fmt_count(total)} variable font files (from filename and font tables)"
+    if variable:
+        return (
+            f"Ready to rename {cs.fmt_count(total)} font files "
+            "(variable fonts from filename and font tables, the rest to PostScript names)"
+        )
+    return "Ready to rename font files to PostScript names"
+
+
 def show_preflight_preview(
     previews_by_dir: Dict[str, List[RenamePreview]],
     show_quality: bool = False,
@@ -2620,6 +2652,24 @@ def show_preflight_preview(
 
     cs.emit(f"{cs.indent(1)}Total files to rename: {cs.fmt_count(total_files)}")
     cs.emit(f"{cs.indent(1)}Directories affected: {cs.fmt_count(total_dirs)}")
+    tally = _ANALYSIS_TALLY
+    if tally["variable"]:
+        cs.emit(
+            f"{cs.indent(1)}Variable fonts: {cs.fmt_count(tally['variable'])}"
+            f" ({cs.fmt_count(tally['variable'] - tally['variable_ok'])} to rename,"
+            f" {cs.fmt_count(tally['variable_ok'])} already named correctly)"
+        )
+    if tally["static_skipped"]:
+        cs.emit(
+            f"{cs.indent(1)}Static fonts left alone: {cs.fmt_count(tally['static_skipped'])}"
+        )
+    all_previews = [p for pv in previews_by_dir.values() for p in pv]
+    methods = {p.stem_method for p in all_previews}
+    # One method for every row says nothing: say it once instead of repeating it in a column.
+    show_method = len(methods) > 1
+    if not show_method and methods:
+        only = next(iter(methods))
+        cs.emit(f"{cs.indent(1)}{VARIABLE_METHOD_NOTE if only == VARIABLE_METHOD_LABEL else 'Names from: ' + only}")
     cs.emit("")
 
     if cs.RICH_AVAILABLE and console:
@@ -2627,7 +2677,8 @@ def show_preflight_preview(
         if table:
             table.add_column("Original Name", style="lighttext", no_wrap=False)
             table.add_column("New Name", style="lighttext", no_wrap=False)
-            table.add_column("Method", style="cyan", no_wrap=False, width=26)
+            if show_method:
+                table.add_column("Method", style="cyan", no_wrap=False, width=26)
 
             if show_quality:
                 table.add_column("Quality", style="cyan", justify="right", width=8)
@@ -2653,7 +2704,7 @@ def show_preflight_preview(
                         table.add_row(
                             highlighted_orig,
                             highlighted_new,
-                            preview.stem_method,
+                            *((preview.stem_method,) if show_method else ()),
                             f"{meta.quality_score:.0f}",
                             f"{meta.font_revision:.2f}",
                             format_language_support(meta.language_support),
@@ -2663,7 +2714,7 @@ def show_preflight_preview(
                         table.add_row(
                             highlighted_orig,
                             highlighted_new,
-                            preview.stem_method,
+                            *((preview.stem_method,) if show_method else ()),
                         )
 
                 # Show quality explanations if requested
@@ -3049,9 +3100,13 @@ Examples:
         # Use same mode string for both dry-run and normal mode
         # DRY prefix will be added automatically by StatusIndicator when dry_run=True
         mode = "RENAME"
+        if _VARIABLE_ONLY:
+            stem_line = "Variable fonts only (from filename and font tables); static fonts are left alone"
+        else:
+            stem_line = f"{args.stem} (variable fonts: from filename and font tables)"
         cs.print_panel(
             f"Mode: {mode}\n"
-            f"Stem (-N/--stem): {args.stem}\n"
+            f"Stem (-N/--stem): {stem_line}\n"
             f"Files: {cs.fmt_count(len(font_paths))}\n"
             f"Directories: {cs.fmt_count(len(dirs_to_process))}",
             title="Font File Renamer (Quality-Aware)",
@@ -3076,7 +3131,7 @@ Examples:
 
             if not args.dry_run:
                 if not cs.prompt_confirm(
-                    "Ready to rename font files to PostScript names",
+                    _rename_prompt_text(previews_by_dir),
                     action_prompt="Proceed with renaming?",
                     default=True,
                 ):
