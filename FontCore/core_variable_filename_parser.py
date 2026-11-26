@@ -102,6 +102,7 @@ class VariableFilenameSlots:
     upright: Optional[bool] = None
     slope_free: Optional[bool] = None
     collection: bool = False
+    weight_in_family: bool = False
     # The family part of the filename as written (underscores and all), so a rename changes only what the
     # convention needs; ``width_in_family`` says whether it already carries the locked width.
     family_text: Optional[str] = None
@@ -183,6 +184,27 @@ def _slope_words() -> dict[str, str]:
     return words
 
 
+def _pull_axes_words(text: str):
+    """Remove Width / OpticalSize / Custom from ``text``; return (axes string in canonical order or None, the rest)."""
+    found = set()
+
+    def take(m):
+        found.add(_AXES_WORDS[m.group(0).lower()])
+        return ""
+
+    rest = re.sub(r"(?i)opticalsize|width|custom", take, text or "")
+    return ("".join(a for a in _AXES_ORDER if a in found) or None), rest
+
+
+def _merge_axes(*parts):
+    found = set()
+    for part in parts:
+        for word in _AXES_ORDER:
+            if part and word in part:
+                found.add(word)
+    return "".join(a for a in _AXES_ORDER if a in found) or None
+
+
 def _classify_after_variable(after_raw: str):
     """Split the text after ``Variable`` into (axes, weight, slope, upright, slope_free, bespoke)."""
     text = re.sub(r"[\s_-]+", "", after_raw or "")
@@ -219,6 +241,8 @@ def _classify_after_variable(after_raw: str):
     if leftovers:
         bespoke = "".join(leftovers)
     axes = "".join(a for a in _AXES_ORDER if a in axes_found) or None
+    if weight and weight.lower() in {"regular", "normal"}:
+        weight = None  # never a weight word in a variable name
     if slope:
         upright = False
     return axes, weight, slope, (True if upright else None), not (slope or upright), bespoke
@@ -299,6 +323,7 @@ def parse_variable_filename(
 
     # Split subfamily on Variable anchor
     before_raw, after_raw = _split_subfamily_on_variable(subfamily_raw)
+    before_axes, before_raw = _pull_axes_words(before_raw)  # Width / OpticalSize / Custom left of Variable
     subfamily_width = _format_peeled_term(before_raw) if before_raw.strip() else None
 
     if subfamily_width:
@@ -330,6 +355,7 @@ def parse_variable_filename(
 
     # Classify after-Variable tokens: {Axes}{Weight}{Slope}, anything else is bespoke
     axes, weight, slope, upright, slope_free, bespoke = _classify_after_variable(after_raw)
+    axes = _merge_axes(before_axes, axes)
 
     return VariableFilenameSlots(
         root_family=root_family,
@@ -394,7 +420,7 @@ def _display_tokens_to_pascal(tokens: List[str]) -> str:
 
 def format_variable_filename(slots: VariableFilenameSlots) -> str:
     """
-    Build a variable-font filename stem from slots: ``{Family}{Optical}{Width}-Variable{Axes}{Weight}{Slope}`` (no slope word = free).
+    Build a variable-font filename stem from slots: ``{Family}{Optical}{Width}{Variant}{Weight}-{FreeExtras}Variable{Slope}`` (no weight in the family = free weight; no slope word = free slope).
 
     Examples:
         Probe-Variable
@@ -416,10 +442,12 @@ def format_variable_filename(slots: VariableFilenameSlots) -> str:
         left = _display_tokens_to_pascal(left_tokens)
     if slots.bespoke and not left.endswith(slots.bespoke.replace(" ", "")):
         left += slots.bespoke.replace(" ", "")  # a design variant (Alt, Cut, Swash) belongs to the family
+    if slots.weight and not slots.weight_in_family:
+        left += slots.weight.replace(" ", "")  # a locked weight is a family word too
     if slots.collection and not left.endswith("Collection"):
         left += "Collection"
 
-    right = "Variable" + (slots.axes or "") + (slots.weight or "")
+    right = (slots.axes or "") + "Variable"
     if slots.slope:
         right += slots.slope.replace(" ", "")
     elif slots.upright:
@@ -445,15 +473,35 @@ def slots_from_plain_filename(input_name: str, *, strip_extension: bool = True) 
     )
 
 
+_FAMILY_WEIGHT_WORDS = ("extralight", "ultralight", "semilight", "hairline", "thin", "light", "book", "medium", "semibold",
+                        "demibold", "extrabold", "ultrabold", "extrablack", "ultrablack", "bold", "black", "heavy", "fat",
+                        "regular", "normal")
+
+
+def _trailing_weight_word(family_text: Optional[str]) -> Optional[str]:
+    """A weight word already ending the family part as written (Regular and Normal count: they are read, never written)."""
+    squashed = re.sub(r"[\s_-]+", "", family_text or "")
+    for word in sorted(_FAMILY_WEIGHT_WORDS, key=len, reverse=True):
+        if squashed.lower().endswith(word) and len(squashed) > len(word):
+            return squashed[-len(word):]
+    return None
+
+
 def apply_variable_traits(slots: VariableFilenameSlots, traits) -> VariableFilenameSlots:
-    """Let the font's tables decide the extra axes and the slope (DECISIONS.md, Area 5); the filename keeps the design."""
+    """Let the font's tables decide the extra axes, the slope and whether the weight is locked (DECISIONS.md, Area 5)."""
     warnings = list(slots.warnings) + list(traits.warnings)
+    weight, in_family = None, False
     if traits.weight_free:
         if slots.weight:
             warnings.append(f"weight word {slots.weight!r} ignored: the font has a free weight axis")
-        weight = None
     else:
-        weight = slots.weight  # only a weight the filename states; never derived from usWeightClass
+        existing = _trailing_weight_word(slots.family_text)
+        if existing:
+            weight, in_family = existing, True
+        else:
+            weight = slots.weight or traits.locked_weight or "Weight"  # "Weight": locked but nobody has named it yet
+            if weight == "Weight":
+                warnings.append("weight is locked but no name states it: the placeholder 'Weight' needs a real name")
     if traits.slope == "italic":
         slope, upright, slope_free = traits.slope_word, None, False
     elif traits.slope == "free":
@@ -461,8 +509,8 @@ def apply_variable_traits(slots: VariableFilenameSlots, traits) -> VariableFilen
     else:
         slope, upright, slope_free = None, True, False
     return replace(
-        slots, axes=traits.axes_word, weight=weight, slope=slope, upright=upright, slope_free=slope_free,
-        collection=traits.collection, bespoke=slots.bespoke, warnings=warnings,
+        slots, axes=traits.axes_word, weight=weight, weight_in_family=in_family, slope=slope, upright=upright,
+        slope_free=slope_free, collection=traits.collection, bespoke=slots.bespoke, warnings=warnings,
     )
 
 
@@ -500,8 +548,8 @@ def resolve_variable_slots(filepath: str) -> Optional[VariableFilenameSlots]:
     slots = variable_slots_from_path(filepath)
     if traits is None:
         return slots if slots_usable_for_policy(slots) else None
-    if not traits.is_variable:
-        return None
+    if not traits.is_variable or traits.no_free_axes:
+        return None  # a font whose every axis is locked is static in effect
     if slots is None:
         slots = slots_from_plain_filename(basename)
     if not slots_usable_for_policy(slots):

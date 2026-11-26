@@ -378,8 +378,9 @@ def _variable_family_base(slots: "VariableFilenameSlots") -> str:
     collection = None
     if getattr(slots, "collection", False) and not (slots.root_family or "").endswith("Collection"):
         collection = "Collection"
+    weight = slots.weight if (getattr(slots, "weight", None) and not getattr(slots, "weight_in_family", False)) else None
     return (
-        join_nonempty(slots.root_family, slots.optical, slots.width, slots.bespoke, collection) or slots.root_family
+        join_nonempty(slots.root_family, slots.optical, slots.width, slots.bespoke, weight, collection) or slots.root_family
     )
 
 
@@ -391,6 +392,7 @@ def _spaced(token: str | None) -> str | None:
 
 
 def _variable_what_varies(slots: "VariableFilenameSlots") -> tuple[str | None, str | None]:
+    """(the free extras, spaced; the locked weight). The weight is a family word now, so ID1 and ID17 leave it out."""
     return _spaced(slots.axes), slots.weight
 
 
@@ -404,9 +406,9 @@ def build_id1_from_variable_slots(slots: "VariableFilenameSlots") -> str:
 
     An angle word other than Italic (Oblique, Reverse, ...) stays in ID1 as naming; ID2 carries Italic.
     """
-    axes, weight = _variable_what_varies(slots)
+    axes, _weight = _variable_what_varies(slots)
     angle = slots.slope if slots.slope and slots.slope.lower() != "italic" else None
-    return join_nonempty(build_id16_from_variable_slots(slots), axes, weight, angle)
+    return join_nonempty(build_id16_from_variable_slots(slots), axes, angle)
 
 
 def build_id17_from_variable_slots(slots: "VariableFilenameSlots") -> str:
@@ -415,9 +417,9 @@ def build_id17_from_variable_slots(slots: "VariableFilenameSlots") -> str:
     A fixed upright is Upright, a fixed slope is the designer's word, and a free slope (no slope word in the filename)
     is "Upright Italic". Regular never appears here.
     """
-    axes, weight = _variable_what_varies(slots)
+    axes, _weight = _variable_what_varies(slots)
     slope = slots.slope or ("Upright" if slots.upright else "Upright Italic")
-    return join_nonempty(axes, weight, slope)
+    return join_nonempty(axes, slope)
 
 
 def build_id4_from_variable_slots(slots: "VariableFilenameSlots") -> str:
