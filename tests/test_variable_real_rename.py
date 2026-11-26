@@ -171,7 +171,7 @@ def test_the_preview_counts_variable_fonts_and_says_the_static_ones_were_left_al
     out = _preview(tmp_path, "-n", "--variable-only")
     assert "Variable fonts: 2 (1 to rename, 1 already named correctly)" in out
     assert "Static fonts left alone: 1" in out
-    assert "Variable fonts only" in out
+    assert "Naming: variable fonts only" in out and "Stem (-N/--stem)" not in out
 
 
 def test_one_method_for_every_row_is_said_once_not_repeated_in_a_column(tmp_path):

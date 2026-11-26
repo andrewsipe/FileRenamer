@@ -3101,12 +3101,12 @@ Examples:
         # DRY prefix will be added automatically by StatusIndicator when dry_run=True
         mode = "RENAME"
         if _VARIABLE_ONLY:
-            stem_line = "Variable fonts only (from filename and font tables); static fonts are left alone"
+            stem_line = "Naming: variable fonts only (from filename and font tables); static fonts are left alone"
         else:
-            stem_line = f"{args.stem} (variable fonts: from filename and font tables)"
+            stem_line = f"Stem (-N/--stem): {args.stem} (variable fonts: from filename and font tables)"
         cs.print_panel(
             f"Mode: {mode}\n"
-            f"Stem (-N/--stem): {stem_line}\n"
+            f"{stem_line}\n"
             f"Files: {cs.fmt_count(len(font_paths))}\n"
             f"Directories: {cs.fmt_count(len(dirs_to_process))}",
             title="Font File Renamer (Quality-Aware)",
