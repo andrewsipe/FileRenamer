@@ -115,6 +115,18 @@ class VariableFilenameSlots:
         return not any("invalid" in w.lower() for w in self.warnings)
 
 
+_RE_COPY_SUFFIX = re.compile(r"(?i)(?:[\s_-]*\(\d+\)|[\s_-]+copy(?:[\s_-]*\d+)?|~\d+)\s*$")
+
+
+def _without_copy_suffix(name: str, *, strip_extension: bool) -> str:
+    """Drop a trailing copy marker (" copy", " copy 2", " (2)", "~001") from a filename: it names a duplicate, not a design."""
+    if strip_extension:
+        stem, ext = os.path.splitext(name)
+        if ext.lower() in {".ttf", ".otf", ".woff", ".woff2", ".ttc", ".otc", ".ttx"}:
+            return _RE_COPY_SUFFIX.sub("", stem) + ext
+    return _RE_COPY_SUFFIX.sub("", name)
+
+
 def _sorted_terms_by_length(terms: set[str]) -> list[str]:
     return sorted(terms, key=lambda t: (-len(t), t.lower()))
 
@@ -303,6 +315,7 @@ def parse_variable_filename(
 
     Returns None if the filename does not appear to be a variable font.
     """
+    input_name = _without_copy_suffix(input_name, strip_extension=strip_extension)
     parsed = parse_filename(input_name, strip_extension=strip_extension)
     subfamily_raw = parsed.subfamily_raw or ""
     family_raw = parsed.family_raw or ""
@@ -460,6 +473,7 @@ def slots_from_plain_filename(input_name: str, *, strip_extension: bool = True) 
 
     Only the family, locked optical size and locked width are read; what varies comes from the font's tables.
     """
+    input_name = _without_copy_suffix(input_name, strip_extension=strip_extension)
     parsed = parse_filename(input_name, strip_extension=strip_extension)
     stem = parsed.family_raw or ""
     stem, peeled_width = _peel_trailing_term(stem, ALL_WIDTH_TERMS)

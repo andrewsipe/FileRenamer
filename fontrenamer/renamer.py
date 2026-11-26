@@ -742,7 +742,10 @@ def extract_metadata(
         font = TTFont(str(font_path))
 
         def _nw(name_id: int) -> str:
-            raw = get_name_string_unicode_fallback(font, name_id)
+            try:
+                raw = get_name_string_unicode_fallback(font, name_id)
+            except Exception:  # a font with no name table at all: every name is empty
+                return ""
             return raw.strip() if raw else ""
 
         ps_name = _nw(6)
@@ -780,6 +783,14 @@ def extract_metadata(
 
         # Variable font detection (use LENIENT mode to catch technically valid variable fonts)
         is_variable = is_variable_font(font, mode=VariableFontMode.LENIENT)
+        if is_variable:
+            # A font whose every axis is locked is static in effect: it is named as a static font.
+            try:
+                from FontCore.core_variable_traits import analyze_variable_traits
+
+                is_variable = not analyze_variable_traits(font).no_free_axes
+            except Exception:
+                pass
 
         os2_table = font.get("OS/2")
         weight_class = getattr(os2_table, "usWeightClass", None) if os2_table else None
@@ -1217,6 +1228,9 @@ def describe_preview_stem_method(
     """
     Short label for preview table: which name-table source drove the rename target.
     """
+    if meta.is_variable and _variable_house_stem(meta):
+        return "Variable (filename + font tables)"
+
     if stem_source == FILENAME_STEM_BEST:
         _, tier = _pick_best_stem_and_tier(meta, force_family)
         if tier is None:
@@ -1313,6 +1327,35 @@ def _stem_after_optional_primary(
     return (meta.ps_name or "").strip()
 
 
+def _variable_house_stem(meta: FontMetadata) -> Optional[str]:
+    """The house-form stem for a variable font (family from the original filename, axes and slope from the tables)."""
+    basename = meta.original_filename or Path(meta.file_path).name
+    try:
+        if meta.file_path and Path(meta.file_path).is_file():
+            slots = resolve_variable_slots(meta.file_path, name=basename)
+        else:
+            slots = parse_variable_filename(basename, strip_extension=True)
+        if slots is not None and slots_usable_for_policy(slots):
+            return format_variable_filename(slots)
+    except Exception:
+        pass
+    return None
+
+
+def _group_key(metadata: FontMetadata) -> str:
+    """Group fonts that compete for one filename. Static fonts: PostScript name and format. A variable font: the house
+    name it will get and format, because its PostScript name is often missing, shared or wrong in fonts collected from
+    many places and does not decide its name. Only true duplicates then share a group."""
+    if metadata.detected_format:
+        format_key = metadata.detected_format
+    else:
+        format_key = Path(metadata.file_path).suffix.lower().lstrip(".")
+    house = _variable_house_stem(metadata) if metadata.is_variable else None
+    if house:
+        return f"variable:{house}|{format_key}"
+    return f"{metadata.ps_name}|{format_key}"
+
+
 def _variable_aligned_stem(meta: FontMetadata, stem: str) -> str:
     """Variable-font stem in the house form ``Family{Optical}{Width}-Variable{Axes}{Weight}{Slope}``.
 
@@ -1337,6 +1380,10 @@ def resolve_renamer_stem(
     """
     Resolve stem policy to either a filesystem stem or keeping the original basename.
     """
+    if meta.is_variable:
+        house = _variable_house_stem(meta)
+        if house:
+            return RenameStemResolution(False, house, "")  # whatever the stem policy, the name tables are not the source
     if stem_source == FILENAME_STEM_BEST:
         picked = _pick_best_filesystem_stem(meta, force_family)
         ob = meta.original_filename or Path(meta.file_path).name
@@ -1939,6 +1986,8 @@ def process_single_font_metadata(
 
     # Validate PostScript name unless policy can rename without it (see stem_mode_allows_missing_postscript).
     allow_invalid_ps = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
+    if metadata.is_variable:
+        allow_invalid_ps = True  # its house name comes from the filename and the font's tables, not from ID6
     if not allow_invalid_ps:
         is_valid, reason = is_valid_postscript_name(metadata.ps_name)
         if not is_valid:
@@ -2056,6 +2105,8 @@ def _process_extracted_metadata(
         return
     metadata.original_filename = original_name
     allow_invalid_ps = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
+    if metadata.is_variable:
+        allow_invalid_ps = True  # its house name comes from the filename and the font's tables, not from ID6
     if not allow_invalid_ps:
         is_valid, reason = is_valid_postscript_name(metadata.ps_name)
         if not is_valid:
@@ -2175,12 +2226,7 @@ def _extract_and_group_metadata(
     # Group by PostScript name AND format
     ps_name_groups: Dict[str, List[FontMetadata]] = {}
     for metadata in font_metadata.values():
-        ps_name = metadata.ps_name
-        if metadata.detected_format:
-            format_key = metadata.detected_format
-        else:
-            format_key = Path(metadata.file_path).suffix.lower().lstrip(".")
-        group_key = f"{ps_name}|{format_key}"
+        group_key = _group_key(metadata)
         if group_key not in ps_name_groups:
             ps_name_groups[group_key] = []
         ps_name_groups[group_key].append(metadata)
@@ -2334,12 +2380,7 @@ def _group_metadata_for_preview(
     path_to_original: Dict[Path, Path] = {}
 
     for font_path, metadata in font_metadata.items():
-        ps_name = metadata.ps_name
-        if metadata.detected_format:
-            format_key = metadata.detected_format
-        else:
-            format_key = Path(metadata.file_path).suffix.lower().lstrip(".")
-        group_key = f"{ps_name}|{format_key}"
+        group_key = _group_key(metadata)
         if group_key not in ps_name_groups:
             ps_name_groups[group_key] = []
         ps_name_groups[group_key].append(metadata)
@@ -2379,7 +2420,7 @@ def analyze_renames(
                 need_extract.append(font_path)
 
         for font_path, metadata in cached_pairs:
-            skip_ps_check = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
+            skip_ps_check = metadata.is_variable or stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
             if not skip_ps_check:
                 is_valid, _ = is_valid_postscript_name(metadata.ps_name)
                 if not is_valid:
@@ -2408,7 +2449,7 @@ def analyze_renames(
             for font_path, metadata in zip(need_extract, extracted):
                 if metadata is None:
                     continue
-                skip_ps_check = stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
+                skip_ps_check = metadata.is_variable or stem_mode_allows_missing_postscript(stem_source, rename_all=rename_all)
                 if not skip_ps_check:
                     is_valid, _ = is_valid_postscript_name(metadata.ps_name)
                     if not is_valid:

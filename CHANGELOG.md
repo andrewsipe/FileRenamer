@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0] - 2026-11-26
+
+FontCore 0.11.6 vendored (see `FontCore/VENDOR.md`).
+
+### Fixed
+- A variable font no longer needs a valid PostScript name, a name table or a unique PostScript name to be renamed. Fonts collected from many places often have none of these, and they were skipped or, when an upright and an italic file shared one PostScript name, left alone. A variable font's house name comes from its filename and its tables, whatever the `-N` stem option says, and fonts are grouped by the name they will get, so only true duplicates compete (one keeps the clean name, the rest become `~001`, `~002`). The preview says "Variable (filename + font tables)" in the Method column.
+- A variable font whose every axis is locked is renamed as a static font.
+
 ## [0.8.3] - 2026-11-26
 
 FontCore 0.11.5 vendored (see `FontCore/VENDOR.md`).
