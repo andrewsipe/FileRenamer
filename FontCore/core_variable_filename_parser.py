@@ -520,6 +520,8 @@ def apply_variable_traits(slots: VariableFilenameSlots, traits) -> VariableFilen
             weight = slots.weight  # only a weight the filename states; none otherwise (names and usWeightClass are not evidence)
     if traits.slope == "italic":
         slope, upright, slope_free = traits.slope_word, None, False
+        if slots.slope and slots.slope.lower() != "italic":
+            slope = slots.slope  # the designer's own word in the filename (Oblique, Slanted) beats the Italic that ID2 and a tied instance list carry
     elif traits.slope == "free":
         slope, upright, slope_free = None, None, True
     else:
