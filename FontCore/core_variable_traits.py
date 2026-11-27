@@ -170,15 +170,31 @@ def _bits_vote(font: Any) -> str:
 
 def _ital_axis_default_leans(font: Any) -> bool:
     """True when a font with a free `ital` axis is italic at its default: it leans right (italicAngle at or beyond -1.5 degrees)
-    and either the axis does not default to 0 or every named instance ends in a slope word. A positive italicAngle (the old
-    wrong value) and a plain upright default are not leaning, so those stay free."""
+    and either the axis never reaches 0 or the lean is real (5 degrees) and every named instance ends in a slope word. A positive
+    italicAngle (the old wrong value) and a plain upright default are not leaning, so those stay free."""
     angle = font["post"].italicAngle if "post" in font else 0
     if angle > -1.5:
         return False
     axis = next((a for a in font["fvar"].axes if a.axisTag == "ital"), None)
     if axis is None:
         return False
-    return axis.defaultValue != 0 or _instance_vote(font) == "italic"
+    if axis.minValue > 0:
+        return True  # the axis never reaches 0, so the font is never upright
+    return angle <= -5 and _instance_vote(font) == "italic"
+
+
+def _without_family(font: Any, cues: str, filename: Optional[str]) -> str:
+    """``cues`` with the family text taken out: a slope word that is part of the family (NeulisCursive) is not the slope."""
+    families = {_name(font, 16) or _name(font, 1)}
+    stem = re.sub(r"\.(ttf|otf|ttc|woff2?)$", "", str(filename or ""), flags=re.I)
+    if re.search("variable", stem, re.I):
+        families.add(re.split(r"variable", stem, flags=re.I)[0])
+    text = cues
+    for family in sorted((f for f in families if f), key=lambda f: -len(re.sub(r"[\s_-]+", "", f))):  # the longest first
+        squashed = re.sub(r"[\s_-]+", "", family or "")
+        if len(squashed) >= 3:
+            text = re.sub(r"[\s_-]*".join(re.escape(c) for c in squashed), " ", text, flags=re.I)
+    return text
 
 
 def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> VariableTraits:
@@ -225,8 +241,10 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
 
     word = None
     if slope == "italic":
-        word = _instance_angle_word(font) or _angle_word(cues)
-        from_file = _angle_word(re.sub(r"\.(ttf|otf|ttc|woff2?)$", "", str(filename), flags=re.I)) if filename else None
+        word = _instance_angle_word(font) or _angle_word(_without_family(font, cues, filename))
+        stem = re.sub(r"\.(ttf|otf|ttc|woff2?)$", "", str(filename or ""), flags=re.I)
+        after_variable = re.split(r"variable", stem, flags=re.I)[-1] if re.search("variable", stem, re.I) else ""
+        from_file = _angle_word(after_variable) if after_variable else None  # only the slope slot, never the family text (NeulisCursive)
         if from_file and from_file.lower() != "italic":
             word = from_file  # the designer's own word in the filename (Oblique, Slanted) beats the Italic from ID2 and the instances
         if word is None and "OS/2" in font and font["OS/2"].fsSelection & (1 << 9):
