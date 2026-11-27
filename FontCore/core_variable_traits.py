@@ -197,6 +197,11 @@ def _without_family(font: Any, cues: str, filename: Optional[str]) -> str:
     return text
 
 
+def _filename_says_upright(filename: Optional[str]) -> bool:
+    stem = re.sub(r"\.(ttf|otf|ttc|woff2?)$", "", str(filename or ""), flags=re.I)
+    return bool(re.search("variable", stem, re.I)) and "upright" in re.split(r"variable", stem, flags=re.I)[-1].lower()
+
+
 def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> VariableTraits:
     """Read free axes and slope from the font's tables. ``filename`` (a name or stem) is one name cue."""
     if "fvar" not in font:
@@ -239,6 +244,12 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
     if votes["stat"] and votes["bits"] == votes["name"] and votes["stat"] != votes["bits"]:
         warnings.append(f"STAT says {votes['stat']} but the italic bits and names say {votes['bits']}")
 
+    angle = float(font["post"].italicAngle) if "post" in font else 0.0
+    if slope == "italic" and abs(angle) < 0.5 and _filename_says_upright(filename):
+        # italic flags and names on a font that does not lean, in a file named Upright (NaraCursive): the lean is the evidence
+        slope = "upright"
+        warnings.append("italic flags but no lean (italicAngle 0) and an Upright filename: upright")
+
     word = None
     if slope == "italic":
         word = _instance_angle_word(font) or _angle_word(_without_family(font, cues, filename))
@@ -252,7 +263,6 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
         if word is None:
             word = "Italic"
             warnings.append("no slope word in the names; Italic assumed")
-    angle = float(font["post"].italicAngle) if "post" in font else 0.0
     return VariableTraits(True, free, weight_free, slope, word, votes, locked_weight, tuple(warnings), angle)
 
 
