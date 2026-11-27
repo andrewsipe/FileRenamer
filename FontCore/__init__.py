@@ -1,4 +1,4 @@
 """Vendored FontCore subset used by fontrenamer. Managed by tools/vendor_fontcore.py."""
 
-__fontcore_version__ = "0.11.8"
-__fontcore_source__ = "v0.11.6-2-g9ef6826"
+__fontcore_version__ = "0.11.9"
+__fontcore_source__ = "v0.11.6-3-gf815e0a"

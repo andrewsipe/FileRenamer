@@ -505,6 +505,14 @@ def _trailing_weight_word(family_text: Optional[str]) -> Optional[str]:
     return None
 
 
+def _upright_by_name(slots: VariableFilenameSlots, traits) -> bool:
+    if slots.upright:
+        return True
+    family = re.sub(r"[\s_-]+", "", slots.family_text or "").lower()
+    word = re.sub(r"[\s_-]+", "", traits.slope_word or "").lower()
+    return bool(word) and word != "italic" and word in family
+
+
 def apply_variable_traits(slots: VariableFilenameSlots, traits) -> VariableFilenameSlots:
     """Let the font's tables decide the extra axes, the slope and whether the weight is locked (DECISIONS.md, Area 5)."""
     warnings = list(slots.warnings) + list(traits.warnings)
@@ -518,7 +526,12 @@ def apply_variable_traits(slots: VariableFilenameSlots, traits) -> VariableFilen
             weight, in_family = existing, True
         else:
             weight = slots.weight  # only a weight the filename states; none otherwise (names and usWeightClass are not evidence)
-    if traits.slope == "italic":
+    if traits.slope == "italic" and abs(traits.italic_angle) < 0.5 and _upright_by_name(slots, traits):
+        # italic flags on a font that does not lean, in a file named Upright or whose slope word is already in the family
+        # name (NaraCursive): the lean is the evidence, so the file is upright
+        slope, upright, slope_free = None, True, False
+        warnings.append(f"italic flags but no lean (italicAngle 0): kept upright instead of {traits.slope_word!r}")
+    elif traits.slope == "italic":
         slope, upright, slope_free = traits.slope_word, None, False
         if slots.slope and slots.slope.lower() != "italic":
             slope = slots.slope  # the designer's own word in the filename (Oblique, Slanted) beats the Italic that ID2 and a tied instance list carry

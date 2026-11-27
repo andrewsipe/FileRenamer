@@ -52,6 +52,7 @@ class VariableTraits:
     slope_votes: dict = field(default_factory=dict)
     locked_weight: Optional[str] = None
     warnings: tuple = ()
+    italic_angle: float = 0.0  # post.italicAngle as stored (the measured lean, when the font carries one)
 
     @property
     def axis_count(self) -> int:
@@ -153,49 +154,6 @@ def _instance_vote(font: Any) -> Optional[str]:
     return "italic"
 
 
-def _stat_vote(font: Any) -> Optional[str]:
-    if "STAT" not in font:
-        return None
-    try:
-        stat = font["STAT"].table
-        axes = stat.DesignAxisRecord.Axis if stat.DesignAxisRecord else []
-        tags = [a.AxisTag for a in axes]
-        if "ital" not in tags:
-            return None
-        idx = tags.index("ital")
-        values = set()
-        for av in (stat.AxisValueArray.AxisValue if stat.AxisValueArray else []):
-            if av.Format in (1, 3):
-                pairs = [(av.AxisIndex, av.Value)]
-            elif av.Format == 2:
-                pairs = [(av.AxisIndex, av.NominalValue)]
-            elif av.Format == 4:
-                pairs = [(r.AxisIndex, r.Value) for r in av.AxisValueRecord]
-            else:
-                pairs = []
-            values.update(v for i, v in pairs if i == idx)
-        if values == {1.0} or values == {1}:
-            return "italic"
-        if values == {0.0} or values == {0}:
-            return "upright"
-    except Exception:
-        return None
-    return None
-
-
-def _instance_vote(font: Any) -> Optional[str]:
-    """Italic when every named instance ends in a slope word. Anything else is no vote: a missing slope word is not
-    evidence of upright (66 of 69 tied vault fonts were italics whose instances only named weights)."""
-    instances = list(font["fvar"].instances)
-    if not instances:
-        return None
-    for inst in instances:
-        words = _name(font, inst.subfamilyNameID).split()
-        if not (words and _ANGLE_ENDING.search(words[-1])):
-            return None
-    return "italic"
-
-
 def _weight_word(text: str) -> Optional[str]:
     squashed = re.sub(r"[\s_-]+", "", text or "").lower()
     for word, canonical in _WEIGHT_WORDS:
@@ -208,6 +166,19 @@ def _bits_vote(font: Any) -> str:
     sel = font["OS/2"].fsSelection if "OS/2" in font else 0
     mac = font["head"].macStyle if "head" in font else 0
     return "italic" if (sel & 1 or sel & (1 << 9) or mac & 2) else "upright"
+
+
+def _ital_axis_default_leans(font: Any) -> bool:
+    """True when a font with a free `ital` axis is italic at its default: it leans right (italicAngle at or beyond -1.5 degrees)
+    and either the axis does not default to 0 or every named instance ends in a slope word. A positive italicAngle (the old
+    wrong value) and a plain upright default are not leaning, so those stay free."""
+    angle = font["post"].italicAngle if "post" in font else 0
+    if angle > -1.5:
+        return False
+    axis = next((a for a in font["fvar"].axes if a.axisTag == "ital"), None)
+    if axis is None:
+        return False
+    return axis.defaultValue != 0 or _instance_vote(font) == "italic"
 
 
 def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> VariableTraits:
@@ -224,6 +195,11 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
         warnings.append("no free weight axis: only a weight the filename states is written (the names and usWeightClass are not evidence of one)")
 
     if any(t in free for t in ("ital", "slnt")):
+        if "ital" in free and _ital_axis_default_leans(font):
+            # an italic-only file whose `ital` axis is a degree of italic (it never reaches upright): its slope is Italic, not free
+            cues = " ".join([_name(font, i) for i in (2, 17, 4, 6)] + ([str(filename)] if filename else []))
+            word = _instance_angle_word(font) or _angle_word(cues) or "Italic"
+            return VariableTraits(True, free, weight_free, "italic", word, {}, locked_weight, tuple(warnings))
         return VariableTraits(True, free, weight_free, "free", None, {}, locked_weight, tuple(warnings))
 
     cues = " ".join([_name(font, i) for i in (2, 17, 4, 6)] + ([str(filename)] if filename else []))
@@ -250,12 +226,16 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
     word = None
     if slope == "italic":
         word = _instance_angle_word(font) or _angle_word(cues)
+        from_file = _angle_word(re.sub(r"\.(ttf|otf|ttc|woff2?)$", "", str(filename), flags=re.I)) if filename else None
+        if from_file and from_file.lower() != "italic":
+            word = from_file  # the designer's own word in the filename (Oblique, Slanted) beats the Italic from ID2 and the instances
         if word is None and "OS/2" in font and font["OS/2"].fsSelection & (1 << 9):
             word = "Oblique"
         if word is None:
             word = "Italic"
             warnings.append("no slope word in the names; Italic assumed")
-    return VariableTraits(True, free, weight_free, slope, word, votes, locked_weight, tuple(warnings))
+    angle = float(font["post"].italicAngle) if "post" in font else 0.0
+    return VariableTraits(True, free, weight_free, slope, word, votes, locked_weight, tuple(warnings), angle)
 
 
 __all__ = ["VariableTraits", "analyze_variable_traits"]
