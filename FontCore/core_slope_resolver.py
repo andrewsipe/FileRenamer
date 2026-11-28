@@ -31,12 +31,13 @@ GLYPH_COUNT_TOLERANCE = 0.25  # past this gap in glyph counts a pair is only 'me
 
 _ITALIC_WORD = re.compile(r"italic|oblique|slanted|slant", re.I)
 _UPRIGHT_WORD = re.compile(r"upright|roman", re.I)
-_SLOPE_WORDS = re.compile(r"italic|oblique|slanted|slant|upright|roman|regular", re.I)
+_ALT_WORD = re.compile(r"cursive|corsiva|kursiv", re.I)  # a design word in the slope slot: an alternate, italic or upright
+_SLOPE_WORDS = re.compile(r"italic|oblique|slanted|slant|upright|roman|regular|cursive|corsiva|kursiv", re.I)
 
 
 @dataclass(frozen=True)
 class FontEvidence:
-    """What one font and its filename say about slope. ``stat`` and ``filename`` are 'italic', 'upright' or None."""
+    """What one font and its filename say about slope. ``stat`` is 'italic', 'upright' or None; ``filename`` also 'alt'."""
 
     path: str
     key: str
@@ -81,6 +82,8 @@ def filename_slope(path: str, name: Optional[str] = None) -> Optional[str]:
         return "italic"
     if _UPRIGHT_WORD.search(slot):
         return "upright"
+    if _ALT_WORD.search(slot):
+        return "alt"  # neutral: the outlines say whether this alternate is an italic or an upright one
     return None
 
 
@@ -175,32 +178,52 @@ def _decision(e: FontEvidence, slope: str, confidence: str, role: str, reasons, 
 
 def _lone(e: FontEvidence) -> SlopeDecision:
     claims = [k for k, v in _claims(e).items() if v]
-    if e.stat == "italic" and e.filename == "upright" and e.lean is not None and e.lean < 1.0:
-        return _decision(e, "upright", "low", "lone",
-                         ["STAT says italic, but the filename says Upright and the outlines do not lean (an upright cursive?)"], True)
+    flat = e.lean is not None and e.lean < 1.0
+    if e.stat == "italic" and e.filename == "upright" and flat:
+        return _decision(e, "upright", "medium", "lone",
+                         ["the filename says Upright and the outlines do not lean; STAT says italic, which nothing else supports"])
     if e.stat == "italic":
         return _decision(e, "italic", "high", "lone", ["no partner, but STAT says italic"])
     if len(claims) == 3 and (e.lean or 0) >= LONE_ITALIC_LEAN:
         return _decision(e, "italic", "medium", "lone",
                          [f"no partner; the filename, flags and names say italic and the outlines lean {e.lean:g} degrees"])
+    leans = (e.lean or 0) >= LONE_ITALIC_LEAN
+    if leans and ((e.filename == "italic" and (e.bits_italic or e.names_italic) and e.stat != "upright")
+                  or (e.filename == "alt" and (e.bits_italic or e.names_italic) and e.stat != "upright")
+                  or (e.filename == "alt" and e.bits_italic and e.names_italic)):  # an alternate's flags and lean outvote STAT
+        return _decision(e, "italic", "medium", "lone",
+                         [f"no partner here; its filename word, flags or names and its {e.lean:g} degree lean agree on italic"])
     reasons = ["no partner: Upright is the safe default"]
     review = False
     if claims:
         reasons.append("its " + ", ".join(claims) + " say italic, which nothing else supports")
-        # Acted on only when the outlines positively read upright and STAT does not say italic. A font whose outlines cannot
-        # be measured, or that leans a little, is left to the tool's own rules and flagged.
-        proven_upright = e.lean is not None and e.lean < 1.0 and e.stat != "italic"
-        review = not proven_upright
-        if review:
+        # Acted on when the outlines lean less than an italic would (under LONE_ITALIC_LEAN degrees) and STAT does not say
+        # italic. Outlines that lean more, or that cannot be measured, leave the tool's own rules in charge, flagged.
+        settled = e.lean is not None and e.lean < LONE_ITALIC_LEAN and e.stat != "italic"
+        review = not settled
+        if settled and not flat:
+            reasons.append(f"the outlines lean only {e.lean:g} degrees: a script or a pattern, not an italic")
+        elif review:
             reasons.append(f"the outlines lean {e.lean:g} degrees: Upright with a slant, or an Italic without its Upright?"
                            if e.lean is not None else "the outlines cannot be measured, so the italic claims are not overruled")
     return _decision(e, "upright", "high" if (not claims or not review) else "medium", "lone", reasons, review)
 
 
+def _word(e: FontEvidence) -> str:
+    """The slope word as written in the filename (Italic, Oblique, Slanted, Cursive), lower case."""
+    _, slot = _slot(Path(e.path).stem)
+    m = _ITALIC_WORD.search(slot) or _ALT_WORD.search(slot)
+    return m.group(0).lower() if m else ""
+
+
 def _pair(a: FontEvidence, b: FontEvidence) -> tuple[SlopeDecision, SlopeDecision]:
     if (not (a.stat and b.stat and a.stat != b.stat) and a.lean is not None and b.lean is not None
             and min(a.lean, b.lean) >= LONE_ITALIC_LEAN and abs(a.lean - b.lean) < LEAN_MARGIN):
-        why = [f"both lean ({a.lean:g} and {b.lean:g} degrees): two slanted files share one name, not an Upright and an Italic"]
+        both = f"both lean ({a.lean:g} and {b.lean:g} degrees)"
+        if _word(a) and _word(b) and _word(a) != _word(b):
+            why = [f"{both} and carry different slope words: two slanted cuts of one family"]
+            return (_decision(a, "italic", "medium", "pair", why, False, b.path), _decision(b, "italic", "medium", "pair", why, False, a.path))
+        why = [f"{both}: two slanted files share one name, not an Upright and an Italic"]
         return (_decision(a, "italic", "low", "pair", why, True, b.path), _decision(b, "italic", "low", "pair", why, True, a.path))
 
     explicit = _score(a) - _score(b)
@@ -254,8 +277,80 @@ def _pair(a: FontEvidence, b: FontEvidence) -> tuple[SlopeDecision, SlopeDecisio
             _decision(other, "upright", confidence, "pair", [f"partner {Path(italic.path).name} is the italic"], review, italic.path))
 
 
-def resolve_slopes(evidence: Iterable[FontEvidence]) -> list[SlopeDecision]:
+def _group(members: list) -> list:
+    """Three or more files with one name: the Upright is the baseline, and each other file is Italic when it leans clearly
+    more than that baseline (Control's Upright, Italic and Cursive; ElmaTrio's Upright, Italic and Slanted)."""
+    names = ", ".join(Path(m.path).name for m in members[:4]) + (" ..." if len(members) > 4 else "")
+
+    def flagged(why):
+        return [_decision(m, "upright", "low", "group", [why], True) for m in members]
+
+    if any(m.lean is None for m in members):
+        return flagged(f"{len(members)} files share this name ({names}) and one cannot be measured")
+    baseline = [m for m in members if m.filename == "upright"]
+    if len(baseline) != 1:
+        return flagged(f"{len(members)} files share this name ({names}) and none or several are marked Upright")
+    base = baseline[0]
+    out = [_decision(base, "upright", "medium", "group", [f"the Upright of {len(members)} files with one name"], False)]
+    for m in members:
+        if m is base:
+            continue
+        gap = m.lean - base.lean
+        if gap >= LEAN_MARGIN:
+            out.append(_decision(m, "italic", "medium", "group",
+                                 [f"leans {m.lean:g} degrees against {base.lean:g} for the Upright of {len(members)} files"], False,
+                                 base.path))
+        elif m.filename == "italic" or m.stat == "italic":
+            out.append(_decision(m, "upright", "low", "group",
+                                 [f"named or marked italic but leans only {gap:g} degrees more than the Upright"], True, base.path))
+        else:
+            out.append(_decision(m, "upright", "medium", "group",
+                                 [f"leans {m.lean:g} degrees, like the Upright: an upright alternate"], False, base.path))
+    return out
+
+
+def load_overrides(path: Optional[str] = None) -> list:
+    """(pattern, slope) pairs from the overrides file: one ``PATTERN upright|italic`` per line, ``#`` for comments, the
+    pattern matched against the filename, case-insensitively. For fonts that only a person can know (a bitmap font whose
+    outlines look like nothing). The file is ``$FONTCORE_SLOPE_OVERRIDES`` or ``~/.config/fontcore/slope_overrides.txt``."""
+    import os
+
+    path = path or os.environ.get("FONTCORE_SLOPE_OVERRIDES") or os.path.expanduser("~/.config/fontcore/slope_overrides.txt")
+    out: list = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                parts = line.rsplit(None, 1)
+                if len(parts) == 2 and parts[1].lower() in ("upright", "italic"):
+                    out.append((parts[0], parts[1].lower()))
+    except OSError:
+        pass
+    return out
+
+
+def _apply_overrides(decisions: list, evidence: dict, overrides: list) -> list:
+    import fnmatch
+
+    if not overrides:
+        return decisions
+    done = []
+    for d in decisions:
+        name = Path(d.path).name.lower()
+        hit = next((slope for pattern, slope in overrides if fnmatch.fnmatch(name, pattern.lower())), None)
+        if hit is None or d.slope in ("free", "unknown"):
+            done.append(d)
+            continue
+        e = evidence.get(d.path)
+        done.append(SlopeDecision(d.path, hit, "high", d.role, ("set in your slope_overrides.txt",), False, d.partner,
+                                  _differs(e, hit) if e else ()))
+    return done
+
+
+def resolve_slopes(evidence: Iterable[FontEvidence], overrides: Optional[list] = None) -> list[SlopeDecision]:
     """Decide every font. Pure: it reads only the evidence records, so it can be tested without fonts."""
+    evidence = list(evidence)
+    by_path = {e.path: e for e in evidence}
     out: dict[str, SlopeDecision] = {}
     groups: dict[str, list[FontEvidence]] = {}
     for e in evidence:
@@ -273,11 +368,9 @@ def resolve_slopes(evidence: Iterable[FontEvidence]) -> list[SlopeDecision]:
             for d in _pair(*members):
                 out[d.path] = d
         else:
-            names = ", ".join(Path(m.path).name for m in members[:4]) + (" ..." if len(members) > 4 else "")
-            for m in members:
-                out[m.path] = _decision(m, "upright", "low", "group",
-                                        [f"{len(members)} files share this name ({names}): more than a pair"], True)
-    return list(out.values())
+            for d in _group(members):
+                out[d.path] = d
+    return _apply_overrides(list(out.values()), by_path, load_overrides() if overrides is None else overrides)
 
 
 def clear_decisions(decisions: Iterable[SlopeDecision]) -> dict:
@@ -292,4 +385,4 @@ def decide_slopes(paths: Iterable[str]) -> list[SlopeDecision]:
     return resolve_slopes([gather_evidence(str(p)) for p in paths])
 
 
-__all__ = ["clear_decisions", "decide_slopes", "FontEvidence", "SlopeDecision", "gather_evidence", "resolve_slopes", "family_key", "filename_slope"]
+__all__ = ["load_overrides", "clear_decisions", "decide_slopes", "FontEvidence", "SlopeDecision", "gather_evidence", "resolve_slopes", "family_key", "filename_slope"]

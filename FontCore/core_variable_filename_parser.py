@@ -591,6 +591,8 @@ def resolve_variable_slots(filepath: str, *, name: Optional[str] = None, slope_d
     resolved = apply_variable_traits(slots, traits)
     if slope_decision in ("italic", "upright") and traits.slope != "free":
         if slope_decision == "upright":
+            if slots.slope and re.fullmatch(r"(?i)cursive|corsiva|kursiv", slots.slope):
+                return resolved  # an upright alternate keeps its own word: Upright would clash with the family's real Upright
             return replace(resolved, slope=None, upright=True, slope_free=False)
         word = traits.slope_word or slots.slope or "Italic"
         return replace(resolved, slope=word, upright=None, slope_free=False)
