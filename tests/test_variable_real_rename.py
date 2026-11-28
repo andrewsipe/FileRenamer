@@ -234,3 +234,14 @@ def test_a_folder_that_needs_nothing_renamed_says_so(tmp_path):
     _font(tmp_path / "Done-VariableUpright.ttf", variable=True, family="Done")
     out = " ".join(_run(tmp_path).split())
     assert "Renamed: 0" in out and "Unchanged: 1" in out
+
+
+def test_your_overrides_apply_in_a_real_rename_where_files_sit_under_temporary_names(tmp_path, monkeypatch):
+    overrides = tmp_path / "overrides.txt"
+    overrides.write_text("Probe*   italic\n")
+    monkeypatch.setenv("FONTCORE_SLOPE_OVERRIDES", str(overrides))
+    folder = tmp_path / "fonts"
+    folder.mkdir()
+    _font(folder / "Probe-VariableUpright.ttf", variable=True)  # its tables say upright; the override says italic
+    _font(folder / "Other-VariableUpright.ttf", variable=True, family="Other")
+    assert _rename(folder) == ["Other-VariableUpright.ttf", "Probe-VariableItalic.ttf"]

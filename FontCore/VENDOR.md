@@ -3,7 +3,7 @@
 fontrenamer ships a minimal copy of [FontCore](https://github.com/andrewsipe/FontCore)
 so it installs without the full library, a submodule, or a symlink.
 
-**Source:** FontCore 0.17.1 (`v0.17.1`)
+**Source:** FontCore 0.17.2 (`v0.17.2`)
 
 **Do not edit these files here.** Fix them in FontCore, then re-sync.
 

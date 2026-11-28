@@ -51,6 +51,7 @@ class FontEvidence:
     glyphs: int = 0
     free_slope: bool = False  # a free ital or slnt axis: both slopes in one file
     error: Optional[str] = None
+    name: Optional[str] = None  # the filename the font is judged by (its real name when the file sits under a temporary one)
 
 
 @dataclass(frozen=True)
@@ -143,9 +144,10 @@ def gather_evidence(path: str, name: Optional[str] = None) -> FontEvidence:
             declared=round(float(font["post"].italicAngle), 2) if "post" in font else 0.0,
             glyphs=font["maxp"].numGlyphs if "maxp" in font else 0,
             free_slope=free,
+            name=Path(name or path).name,
         )
     except Exception as exc:  # unreadable or damaged: say so, go on
-        return FontEvidence(path=path, key=family_key(path, (), name), error=f"{type(exc).__name__}: {exc}")
+        return FontEvidence(path=path, key=family_key(path, (), name), error=f"{type(exc).__name__}: {exc}", name=Path(name or path).name)
 
 
 def _score(e: FontEvidence) -> int:
@@ -341,12 +343,12 @@ def _apply_overrides(decisions: list, evidence: dict, overrides: list) -> list:
         return decisions
     done = []
     for d in decisions:
-        name = Path(d.path).name.lower()
+        e = evidence.get(d.path)
+        name = ((e.name if e and e.name else None) or Path(d.path).name).lower()  # the real filename, not a temporary one
         hit = next((slope for pattern, slope in overrides if fnmatch.fnmatch(name, pattern.lower())), None)
         if hit is None or d.slope in ("free", "unknown"):
             done.append(d)
             continue
-        e = evidence.get(d.path)
         done.append(SlopeDecision(d.path, hit, "high", d.role, ("set in your slope_overrides.txt",), False, d.partner,
                                   _differs(e, hit) if e else ()))
     return done
