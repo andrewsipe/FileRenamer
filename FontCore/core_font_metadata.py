@@ -37,6 +37,7 @@ class FontMetadata:
     weight_class: Optional[int] = None  # OS/2 usWeightClass
     is_italic: Optional[bool] = None  # fsSelection italic/oblique bit or macStyle italic bit
     is_variable: bool = False  # has an fvar table
+    slope_decision: Optional[str] = None  # "italic" | "upright" from core_slope_resolver, set per run; never trusted from a cache
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""

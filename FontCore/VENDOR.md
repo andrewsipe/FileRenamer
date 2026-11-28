@@ -3,7 +3,7 @@
 fontrenamer ships a minimal copy of [FontCore](https://github.com/andrewsipe/FontCore)
 so it installs without the full library, a submodule, or a symlink.
 
-**Source:** FontCore 0.11.12 (`v0.11.6-6-g758234c`)
+**Source:** FontCore 0.15.3 (`v0.15.3`)
 
 **Do not edit these files here.** Fix them in FontCore, then re-sync.
 
@@ -16,6 +16,8 @@ so it installs without the full library, a submodule, or a symlink.
 - `core_font_sorter.py`
 - `core_font_utils.py`
 - `core_name_policies.py`
+- `core_slant_measure.py`
+- `core_slope_resolver.py`
 - `core_variable_filename_parser.py`
 - `core_variable_font_detection.py`
 - `core_variable_traits.py`

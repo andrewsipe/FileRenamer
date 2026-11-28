@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fontrenamer"
-version = "0.10.1"
+version = "0.11.0"
 description = "Rename, organize, and deduplicate font files from their name tables"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -37,4 +37,4 @@ packages = ["fontrenamer", "FontCore"]
 testpaths = ["tests"]
 
 [tool.fontcore-vendor]
-modules = ["core_console_styles", "core_file_collector", "core_font_extension", "core_font_metadata", "core_font_sorter", "core_font_utils", "core_name_policies", "core_variable_filename_parser", "core_variable_font_detection", "core_variable_traits"]
+modules = ["core_console_styles", "core_file_collector", "core_font_extension", "core_font_metadata", "core_font_sorter", "core_font_utils", "core_name_policies", "core_slant_measure", "core_slope_resolver", "core_variable_filename_parser", "core_variable_font_detection", "core_variable_traits"]

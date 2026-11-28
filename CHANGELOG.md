@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.11.0] - 2026-11-27
+
+### Changed
+- A variable font's Upright or Italic word now comes from one decision made for the whole folder, so a font and its partner get different names instead of one name plus `~001`. The fonts of a folder are grouped by name (slope words taken out) and compared: STAT first, then which one's outlines lean more, then the filename, names and flags. A font alone in its family stays Upright unless its outlines are shown to be upright (stale italic flags then no longer name it Italic). FontCore's `core_slope_resolver` makes the decision; FontFixer uses the same one.
+- A font the resolver cannot be sure of (unmeasurable outlines, conflicting evidence, three or more files with one name, two slanted files sharing a name, a free slope axis) keeps the slope its own tables give it, as before. `tools/resolve_slopes.py` in FontCore lists them with the reason.
+
 ## [0.10.1] - 2026-11-26
 
 ### Changed

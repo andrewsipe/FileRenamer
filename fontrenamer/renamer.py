@@ -255,9 +255,13 @@ class FontMetadata:
     is_variable: bool = False
     weight_class: Optional[int] = None  # OS/2 usWeightClass (for the same-face check)
     is_italic: Optional[bool] = None  # fsSelection or macStyle italic/oblique bit
+    # "italic" | "upright": the family-wide answer from FontCore's slope resolver, set for each run from the other files in
+    # the folder. Never cached: the same font decides differently when its partner is added or removed.
+    slope_decision: Optional[str] = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
+        data.pop("slope_decision", None)
         # Convert sets to lists for JSON serialization
         data["language_support"] = list(self.language_support)
         data["opentype_features"] = list(self.opentype_features)
@@ -279,6 +283,7 @@ class FontMetadata:
             data["is_variable"] = False
         data.setdefault("weight_class", None)
         data.setdefault("is_italic", None)
+        data.pop("slope_decision", None)  # a decision is never read back from a cache
         # file_mtime may not exist in old cache files (then we validate by size only)
         if "file_mtime" not in data:
             data["file_mtime"] = None
@@ -1343,7 +1348,7 @@ def _variable_house_stem(meta: FontMetadata) -> Optional[str]:
     basename = meta.original_filename or Path(meta.file_path).name
     try:
         if meta.file_path and Path(meta.file_path).is_file():
-            slots = resolve_variable_slots(meta.file_path, name=basename)
+            slots = resolve_variable_slots(meta.file_path, name=basename, slope_decision=meta.slope_decision)
         else:
             slots = parse_variable_filename(basename, strip_extension=True)
         if slots is not None and slots_usable_for_policy(slots):
@@ -1377,7 +1382,8 @@ def _variable_aligned_stem(meta: FontMetadata, stem: str) -> str:
     basename = meta.original_filename or Path(meta.file_path).name
     # The file may already sit under a temporary name (phase 1 of the two-pass rename): the tables come from where it is now,
     # the family text from the name it had.
-    slots = resolve_variable_slots(meta.file_path, name=basename) if meta.file_path and Path(meta.file_path).is_file() else None
+    slots = (resolve_variable_slots(meta.file_path, name=basename, slope_decision=meta.slope_decision)
+             if meta.file_path and Path(meta.file_path).is_file() else None)
     if slots is None:
         slots = parse_variable_filename(basename, strip_extension=True)
         if not slots_usable_for_policy(slots):
@@ -2240,6 +2246,8 @@ def _extract_and_group_metadata(
     if not font_metadata:
         return {}, {}
 
+    _attach_slope_decisions(font_metadata)
+
     # Group by PostScript name AND format
     ps_name_groups: Dict[str, List[FontMetadata]] = {}
     for metadata in font_metadata.values():
@@ -2409,6 +2417,36 @@ def _group_metadata_for_preview(
     return ps_name_groups, path_to_original
 
 
+def _attach_slope_decisions(font_metadata: Dict[Path, FontMetadata]) -> None:
+    """Decide Upright or Italic for these fonts together (FontCore slope resolver) and hand each variable font its decision,
+    so a font and its partner get different names instead of one name plus ~001. A font the resolver flags, or that has a
+    free slope axis, keeps the slope its own tables give it. Each font is judged by the filename it had before any
+    temporary name, and ``font_metadata`` must be complete for the folder before this is called."""
+    metas = list(font_metadata.values())
+    for meta in metas:
+        meta.slope_decision = None
+    if not any(m.is_variable for m in metas):
+        return
+    try:
+        from FontCore.core_slope_resolver import clear_decisions, gather_evidence, resolve_slopes
+
+        paths = [m.file_path for m in metas]
+        names = [m.original_filename or Path(m.file_path).name for m in metas]
+        if len(paths) >= PARALLEL_EXTRACT_THRESHOLD:
+            from concurrent.futures import ProcessPoolExecutor
+
+            with ProcessPoolExecutor(max_workers=min(PARALLEL_MAX_WORKERS_DEFAULT, len(paths))) as executor:
+                evidence = list(executor.map(gather_evidence, paths, names, chunksize=32))
+        else:
+            evidence = [gather_evidence(p, n) for p, n in zip(paths, names)]
+        decided = clear_decisions(resolve_slopes(evidence))
+    except Exception:  # the resolver must never stop a rename: fall back to each font's own tables
+        return
+    for meta in metas:
+        if meta.is_variable:
+            meta.slope_decision = decided.get(os.path.abspath(meta.file_path))
+
+
 def analyze_renames(
     font_paths: List[str],
     rename_all: bool = False,
@@ -2485,6 +2523,8 @@ def analyze_renames(
 
         if not font_metadata:
             continue
+
+        _attach_slope_decisions(font_metadata)
 
         # Group by PostScript name AND format
         ps_name_groups, path_to_original = _group_metadata_for_preview(font_metadata)

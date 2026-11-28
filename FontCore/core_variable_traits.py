@@ -245,7 +245,12 @@ def analyze_variable_traits(font: Any, filename: Optional[str] = None) -> Variab
         warnings.append(f"STAT says {votes['stat']} but the italic bits and names say {votes['bits']}")
 
     angle = float(font["post"].italicAngle) if "post" in font else 0.0
-    if slope == "italic" and abs(angle) < 0.5 and _filename_says_upright(filename):
+    if slope == "italic" and votes["stat"] == "upright" and _filename_says_upright(filename):
+        # the filename and STAT both say upright; the italic bits and names are stale (Baudricourt-VariableUpright carries them,
+        # and so does its italicAngle). Two statements by the designer outweigh flags a tool may have copied from the Italic file.
+        slope = "upright"
+        warnings.append("italic flags and names, but STAT and an Upright filename say upright: upright")
+    elif slope == "italic" and abs(angle) < 0.5 and _filename_says_upright(filename):
         # italic flags and names on a font that does not lean, in a file named Upright (NaraCursive): the lean is the evidence
         slope = "upright"
         warnings.append("italic flags but no lean (italicAngle 0) and an Upright filename: upright")

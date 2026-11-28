@@ -554,13 +554,15 @@ def slots_usable_for_policy(slots: Optional[VariableFilenameSlots]) -> bool:
     return slots.is_valid
 
 
-def resolve_variable_slots(filepath: str, *, name: Optional[str] = None) -> Optional[VariableFilenameSlots]:
+def resolve_variable_slots(filepath: str, *, name: Optional[str] = None, slope_decision: Optional[str] = None) -> Optional[VariableFilenameSlots]:
     """Variable-font slots for a font file, or None for a static font.
 
     The font's tables decide whether it is variable, which axes are free and the slope (DECISIONS.md, Area 5); the
     filename supplies the family and the locked optical size, width and weight. A file that cannot be opened falls
     back to its filename alone. ``name`` is the filename to read the family from when the file currently sits under
-    another name (fontrenamer moves files to temporary names first).
+    another name (fontrenamer moves files to temporary names first). ``slope_decision`` ("italic" or "upright") is the
+    family-wide answer from ``core_slope_resolver``: when given, it settles the slope word instead of the font's own
+    flags and names, which go stale. A font with a free slope axis keeps the bare Variable either way.
     """
     from FontCore.core_variable_traits import analyze_variable_traits
 
@@ -586,7 +588,13 @@ def resolve_variable_slots(filepath: str, *, name: Optional[str] = None) -> Opti
         slots = slots_from_plain_filename(basename)
     if not slots_usable_for_policy(slots):
         return None
-    return apply_variable_traits(slots, traits)
+    resolved = apply_variable_traits(slots, traits)
+    if slope_decision in ("italic", "upright") and traits.slope != "free":
+        if slope_decision == "upright":
+            return replace(resolved, slope=None, upright=True, slope_free=False)
+        word = traits.slope_word or slots.slope or "Italic"
+        return replace(resolved, slope=word, upright=None, slope_free=False)
+    return resolved
 
 
 __all__ = [
