@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.11.1] - 2026-11-27
+
+### Fixed
+- The summary after a real rename counted every file as renamed ("Renamed 5171, unchanged 0" when 39 files changed name). During a real run every file sits under a temporary name for a moment, so a file that goes back to its own name was counted as a rename. Those files are now counted as unchanged, in both a real run and a dry run, and the summary has an Unchanged line. A dry run used to call them skipped.
+
 ## [0.11.0] - 2026-11-27
 
 ### Changed

@@ -209,3 +209,28 @@ def test_a_finder_copy_suffix_is_a_duplicate_not_part_of_the_family(tmp_path):
 def test_a_plain_regular_on_a_variable_font_names_no_weight(tmp_path):
     _font(tmp_path / "Cloitre-Regular.ttf", variable=True, family="Cloitre", axes=(("GRAD", -50, 0, 100),))
     assert _rename(tmp_path) == ["Cloitre-CustomVariableUpright.ttf"]
+
+
+def _run(folder: Path):
+    result = subprocess.run(
+        [sys.executable, "-m", "fontrenamer.renamer", "--no-preview", "--no-progress", str(folder)],
+        capture_output=True, text=True, cwd=ROOT, timeout=300, stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode == 0, result.stdout[-600:] + result.stderr[-600:]
+    return result.stdout
+
+
+def test_only_the_files_that_change_name_count_as_renamed(tmp_path):
+    _font(tmp_path / "Probe-Variable.ttf", variable=True)  # becomes Probe-VariableUpright.ttf
+    _font(tmp_path / "Done-VariableUpright.ttf", variable=True, family="Done")  # already right
+    _font(tmp_path / "Also-VariableUpright.ttf", variable=True, family="Also")  # already right
+    out = _run(tmp_path)
+    assert "Total files: 3" in out and "Renamed: 1" in out and "Unchanged: 2" in out
+    assert "Renamed 1, unchanged 2" in " ".join(out.split())
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Also-VariableUpright.ttf", "Done-VariableUpright.ttf", "Probe-VariableUpright.ttf"]
+
+
+def test_a_folder_that_needs_nothing_renamed_says_so(tmp_path):
+    _font(tmp_path / "Done-VariableUpright.ttf", variable=True, family="Done")
+    out = " ".join(_run(tmp_path).split())
+    assert "Renamed: 0" in out and "Unchanged: 1" in out

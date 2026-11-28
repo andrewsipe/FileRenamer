@@ -447,6 +447,7 @@ class RenameStats:
 
     total_files: int = 0
     renamed: int = 0
+    unchanged: int = 0  # already named as they should be: moved back to their own name, not counted as renamed
     skipped: int = 0
     invalid: int = 0
     errors: List[Tuple[str, str]] = field(default_factory=list)
@@ -1859,9 +1860,9 @@ def execute_final_renames(
         temp_path_normalized = normalize_path(temp_path)
         target_path = normalize_path(temp_path.parent / new_name)
 
-        # Skip if name unchanged
+        # Already the right name (a dry run has no temporary name to compare)
         if temp_path_normalized == target_path:
-            stats.skipped += 1
+            stats.unchanged += 1
             continue
 
         # Handle naming conflicts
@@ -1883,7 +1884,12 @@ def execute_final_renames(
         )
 
         if success:
-            stats.renamed += 1
+            # During a real run every file sits under a temporary name, so this move also puts back the files whose name
+            # does not change: those are unchanged, not renamed.
+            if resolved_name == original_name:
+                stats.unchanged += 1
+            else:
+                stats.renamed += 1
         else:
             stats.add_error(original_name, error or "unknown error")
 
@@ -2352,6 +2358,7 @@ def process_directory(
         )
         stats.renamed = rename_stats.renamed
         stats.skipped += rename_stats.skipped
+        stats.unchanged += rename_stats.unchanged
         stats.errors.extend(rename_stats.errors)
 
         if not dry_run:
@@ -2931,7 +2938,7 @@ def show_directory_stats(dir_stats: RenameStats, verbose: bool) -> None:
     """Display statistics for a single directory"""
     if console and not verbose:
         cs.StatusIndicator("info").add_message(
-            f"Renamed: {cs.fmt_count(dir_stats.renamed)} | Skipped: {cs.fmt_count(dir_stats.skipped)} | Invalid: {cs.fmt_count(dir_stats.invalid)}"
+            f"Renamed: {cs.fmt_count(dir_stats.renamed)} | Unchanged: {cs.fmt_count(dir_stats.unchanged)} | Skipped: {cs.fmt_count(dir_stats.skipped)} | Invalid: {cs.fmt_count(dir_stats.invalid)}"
         ).emit()
 
 
@@ -3210,6 +3217,7 @@ Examples:
 
         total_stats.total_files += dir_stats.total_files
         total_stats.renamed += dir_stats.renamed
+        total_stats.unchanged += dir_stats.unchanged
         total_stats.skipped += dir_stats.skipped
         total_stats.invalid += dir_stats.invalid
         total_stats.errors.extend(dir_stats.errors)
@@ -3220,6 +3228,7 @@ Examples:
         cs.print_panel(
             f"Total files: {cs.fmt_count(total_stats.total_files)}\n"
             f"Renamed: {cs.fmt_count(total_stats.renamed)}\n"
+            f"Unchanged: {cs.fmt_count(total_stats.unchanged)}\n"
             f"Skipped: {cs.fmt_count(total_stats.skipped)}\n"
             f"Invalid: {cs.fmt_count(total_stats.invalid)}",
             title="Summary",
@@ -3230,7 +3239,7 @@ Examples:
     cs.fmt_processing_summary(
         dry_run=args.dry_run,
         updated=total_stats.renamed,
-        unchanged=max(total_stats.total_files - total_stats.renamed - total_stats.invalid - total_stats.skipped, 0),
+        unchanged=total_stats.unchanged,
         errors=problems,
         skipped=max(total_stats.skipped - len(total_stats.errors), 0),
         verb="Renamed",
