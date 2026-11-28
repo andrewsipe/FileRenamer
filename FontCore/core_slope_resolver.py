@@ -27,6 +27,7 @@ from typing import Any, Iterable, Optional
 
 LEAN_MARGIN = 2.5  # degrees: one font of a pair must lean this much more than the other for the lean to decide
 LONE_ITALIC_LEAN = 3.0  # a lone font keeps Italic from agreeing evidence only when it leans at least this much
+STORED_ITALIC_ANGLE = 4.9  # a stored angle leaning right by this much is a design value: outlines that read flat do not overrule it
 GLYPH_COUNT_TOLERANCE = 0.25  # past this gap in glyph counts a pair is only 'medium' at best: italics are often subsets
 
 _ITALIC_WORD = re.compile(r"italic|oblique|slanted|slant", re.I)
@@ -199,9 +200,13 @@ def _lone(e: FontEvidence) -> SlopeDecision:
         reasons.append("its " + ", ".join(claims) + " say italic, which nothing else supports")
         # Acted on when the outlines lean less than an italic would (under LONE_ITALIC_LEAN degrees) and STAT does not say
         # italic. Outlines that lean more, or that cannot be measured, leave the tool's own rules in charge, flagged.
-        settled = e.lean is not None and e.lean < LONE_ITALIC_LEAN and e.stat != "italic"
+        stored_lean = e.declared <= -STORED_ITALIC_ANGLE  # italicAngle is negative for a right-leaning italic
+        settled = e.lean is not None and e.lean < LONE_ITALIC_LEAN and e.stat != "italic" and not stored_lean
         review = not settled
-        if settled and not flat:
+        if stored_lean and e.lean is not None and e.lean < LONE_ITALIC_LEAN:
+            reasons.append(f"but the font stores an angle of {e.declared:g} degrees and its outlines measure only {e.lean:g}: "
+                           "the designer may have meant a lean the straight capitals do not show")
+        elif settled and not flat:
             reasons.append(f"the outlines lean only {e.lean:g} degrees: a script or a pattern, not an italic")
         elif review:
             reasons.append(f"the outlines lean {e.lean:g} degrees: Upright with a slant, or an Italic without its Upright?"
