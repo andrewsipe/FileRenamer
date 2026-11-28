@@ -171,7 +171,7 @@ _SINGLE_CAP_NUMBER = (
 # Multi-part decimal numbers (1.2.3, 2.3.4) - must have at least two periods
 _DECIMAL_NUMBER = r"\d+(?:\.\d+)+"  # 0.1, 1.2, 1.2.3, 2.3.4.5
 # Capitalized word, non-greedy to stop before capital, single-cap-number, digit, or special characters
-_CAPITALIZED_WORD = r"[A-Z]?[a-z]+?(?=[A-Z]|(?<![A-Z])[A-Z]\d|\d|[&!*(){}\[\]?,;$\-%@']|$)"  # Queen, Sans, ttp (stops before capital+number, digits, or special characters including apostrophe
+_CAPITALIZED_WORD = r"[A-Z]?[a-z]+?(?=[A-Z]|(?<![A-Z])[A-Z]\d|\d|[&!*(){}\[\]?,;$\-%@'.]|$)"  # Queen, Sans, ttp (stops before capital+number, digits, or special characters including apostrophe
 _ALL_CAPS_SEQUENCE = r"[A-Z]{2,}"  # KWAK, UI (but not single letters like "R")
 _SINGLE_UPPERCASE = r"[A-Z]"  # Single uppercase letter (e.g., "U" in "FitU&lc")
 _DIGITS = r"\d+"  # 2, 10, 123
@@ -189,13 +189,14 @@ _SEMICOLON = r";"  # Preserved as separate token
 _DOLLAR = r"\$"  # Preserved as separate token (escaped for regex)
 _PERCENT = r"%"  # Preserved as separate token
 _AT = r"@"  # Preserved as separate token
+_PERIOD = r"\."  # Kept in place, no space either side ("Lto.Unicore", "No.1")
 
 _TOKEN_PATTERN = re.compile(
-    f"{_ACRONYM_BEFORE_CAMEL}|{_SINGLE_CAP_NUMBER}|{_DECIMAL_NUMBER}|{_CAPITALIZED_WORD}|{_ALL_CAPS_SEQUENCE}|{_SINGLE_UPPERCASE}|{_DIGITS}|{_AMPERSAND}|{_EXCLAMATION}|{_ASTERISK}|{_LEFT_PAREN}|{_LEFT_BRACE}|{_LEFT_BRACKET}|{_RIGHT_BRACKET}|{_RIGHT_BRACE}|{_QUESTION}|{_COMMA}|{_SEMICOLON}|{_DOLLAR}|{_PERCENT}|{_AT}"
+    f"{_ACRONYM_BEFORE_CAMEL}|{_SINGLE_CAP_NUMBER}|{_DECIMAL_NUMBER}|{_CAPITALIZED_WORD}|{_ALL_CAPS_SEQUENCE}|{_SINGLE_UPPERCASE}|{_DIGITS}|{_AMPERSAND}|{_EXCLAMATION}|{_ASTERISK}|{_LEFT_PAREN}|{_LEFT_BRACE}|{_LEFT_BRACKET}|{_RIGHT_BRACKET}|{_RIGHT_BRACE}|{_QUESTION}|{_COMMA}|{_SEMICOLON}|{_DOLLAR}|{_PERCENT}|{_AT}|{_PERIOD}"
 )
 
 # Character class constants for spacing rules
-NO_SPACE = {"*", "@", "'"}  # Apostrophe has no spacing (attaches to adjacent words)
+NO_SPACE = {"*", "@", "'", "."}  # Apostrophe has no spacing (attaches to adjacent words)
 LEADING_SPACE = {"(", "{", "["}
 TRAILING_SPACE = {"!", "?", ",", ";", ")", "]", "}"}
 SPECIAL_MONEY_PERCENT = {"$", "%"}

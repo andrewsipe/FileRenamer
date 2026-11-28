@@ -131,14 +131,31 @@ def _sorted_terms_by_length(terms: set[str]) -> list[str]:
     return sorted(terms, key=lambda t: (-len(t), t.lower()))
 
 
+def _starts_a_word(raw: str, start: int) -> bool:
+    """True when ``raw[start:]`` begins a new word: a capital after a lowercase letter or digit,
+    anything after a non-letter, or any position in an all-caps name. "Mix" must not lose its
+    "x", nor "Teletext" its "text"."""
+    if start <= 0:
+        return True
+    prev, here = raw[start - 1], raw[start]
+    if not prev.isalpha():
+        return True
+    if raw.isupper():
+        return True
+    return here.isupper() and prev.islower()
+
+
 def _peel_trailing_term(raw: str, terms: set[str]) -> tuple[str, Optional[str]]:
-    """Remove the longest matching trailing term from PascalCase raw string."""
+    """Remove the longest matching trailing term from PascalCase raw string.
+
+    A term is only peeled at a word boundary, so "Teletext" keeps its "text" and "Mix" its "x".
+    """
     for term in _sorted_terms_by_length(terms):
-        if raw.endswith(term) and len(raw) > len(term):
-            return raw[: -len(term)], term
-        # Case-insensitive fallback
-        if raw.lower().endswith(term.lower()) and len(raw) > len(term):
-            return raw[: -len(term)], raw[-len(term) :]
+        if len(raw) <= len(term):
+            continue
+        start = len(raw) - len(term)
+        if raw.lower().endswith(term.lower()) and _starts_a_word(raw, start):
+            return raw[:start], raw[start:]
     return raw, None
 
 
